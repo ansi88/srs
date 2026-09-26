@@ -1,25 +1,1382 @@
-/*
-The MIT License (MIT)
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
-Copyright (c) 2013-2016 SRS(ossrs)
+#include <srs_core.hpp>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
+#include <srs_kernel_error.hpp>
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+// Important: This provenance record is maintained by AI. Do not edit it manually.
+// Vendored from https://github.com/json-parser/json-parser and synchronized on 2026-08-12.
+// Check these per-file upstream revisions when evaluating future updates:
+//   json.h: fe609414773415c02f6312134e916e1590f296e3 (2021-11-09)
+//   json.c: 161dff8321dfe86d0f657f844d01b9daa97ad33c (2021-11-16)
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+// LCOV_EXCL_START
+
+/* vim: set et ts=3 sw=3 sts=3 ft=c:
+ *
+ * Copyright (C) 2012-2021 the json-parser authors  All rights reserved.
+ * https://github.com/json-parser/json-parser
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *   notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#ifndef _JSON_H
+#define _JSON_H
+
+#ifndef json_char
+   #define json_char char
+#endif
+
+#ifndef json_int_t
+   #undef JSON_INT_T_OVERRIDDEN
+   #if defined(_MSC_VER)
+      #define json_int_t __int64
+   #elif (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) || (defined(__cplusplus) && __cplusplus >= 201103L)
+      /* C99 and C++11 */
+      #include <stdint.h>
+      #define json_int_t int_fast64_t
+   #else
+      /* C89 */
+      #define json_int_t long
+   #endif
+#else
+   #define JSON_INT_T_OVERRIDDEN 1
+#endif
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+
+   #include <string.h>
+
+   extern "C"
+   {
+
+#endif
+
+typedef struct
+{
+   unsigned long max_memory;  /* should be size_t, but would modify the API */
+   int settings;
+
+   /* Custom allocator support (leave null to use malloc/free)
+    */
+
+   void * (* mem_alloc) (size_t, int zero, void * user_data);
+   void (* mem_free) (void *, void * user_data);
+
+   void * user_data;  /* will be passed to mem_alloc and mem_free */
+
+   size_t value_extra;  /* how much extra space to allocate for values? */
+
+} json_settings;
+
+#define json_enable_comments  0x01
+
+typedef enum
+{
+   json_none,
+   json_object,
+   json_array,
+   json_integer,
+   json_double,
+   json_string,
+   json_boolean,
+   json_null
+
+} json_type;
+
+extern const struct _json_value json_value_none;
+
+typedef struct _json_object_entry
+{
+    json_char * name;
+    unsigned int name_length;
+
+    struct _json_value * value;
+
+} json_object_entry;
+
+typedef struct _json_value
+{
+   struct _json_value * parent;
+
+   json_type type;
+
+   union
+   {
+      int boolean;
+      json_int_t integer;
+      double dbl;
+
+      struct
+      {
+         unsigned int length;
+         json_char * ptr; /* null terminated */
+
+      } string;
+
+      struct
+      {
+         unsigned int length;
+
+         json_object_entry * values;
+
+         #if defined(__cplusplus)
+         json_object_entry * begin () const
+         {  return values;
+         }
+         json_object_entry * end () const
+         {  return values + length;
+         }
+         #endif
+
+      } object;
+
+      struct
+      {
+         unsigned int length;
+         struct _json_value ** values;
+
+         #if defined(__cplusplus)
+         _json_value ** begin () const
+         {  return values;
+         }
+         _json_value ** end () const
+         {  return values + length;
+         }
+         #endif
+
+      } array;
+
+   } u;
+
+   union
+   {
+      struct _json_value * next_alloc;
+      void * object_mem;
+
+   } _reserved;
+
+   #ifdef JSON_TRACK_SOURCE
+
+      /* Location of the value in the source JSON
+       */
+      unsigned int line, col;
+
+   #endif
+
+
+   /* Some C++ operator sugar */
+
+   #ifdef __cplusplus
+
+      public:
+
+         inline _json_value ()
+         {  memset (this, 0, sizeof (_json_value));
+         }
+
+         inline const struct _json_value &operator [] (int index) const
+         {
+            if (type != json_array || index < 0
+                     || ((unsigned int) index) >= u.array.length)
+            {
+               return json_value_none;
+            }
+
+            return *u.array.values [index];
+         }
+
+         inline const struct _json_value &operator [] (const char * index) const
+         {
+            if (type != json_object)
+               return json_value_none;
+
+            for (unsigned int i = 0; i < u.object.length; ++ i)
+               if (!strcmp (u.object.values [i].name, index))
+                  return *u.object.values [i].value;
+
+            return json_value_none;
+         }
+
+         inline operator const char * () const
+         {
+            switch (type)
+            {
+               case json_string:
+                  return u.string.ptr;
+
+               default:
+                  return "";
+            };
+         }
+
+         inline operator json_int_t () const
+         {
+            switch (type)
+            {
+               case json_integer:
+                  return u.integer;
+
+               case json_double:
+                  return (json_int_t) u.dbl;
+
+               default:
+                  return 0;
+            };
+         }
+
+         inline operator bool () const
+         {
+            if (type != json_boolean)
+               return false;
+
+            return u.boolean != 0;
+         }
+
+         inline operator double () const
+         {
+            switch (type)
+            {
+               case json_integer:
+                  return (double) u.integer;
+
+               case json_double:
+                  return u.dbl;
+
+               default:
+                  return 0;
+            };
+         }
+
+   #endif
+
+} json_value;
+
+json_value * json_parse (const json_char * json,
+                         size_t length);
+
+#define json_error_max 128
+json_value * json_parse_ex (json_settings * settings,
+                            const json_char * json,
+                            size_t length,
+                            char * error);
+
+void json_value_free (json_value *);
+
+
+/* Not usually necessary, unless you used a custom mem_alloc and now want to
+ * use a custom mem_free.
+ */
+void json_value_free_ex (json_settings * settings,
+                         json_value *);
+
+
+#ifdef __cplusplus
+   } /* extern "C" */
+#endif
+
+#endif
+
+/* vim: set et ts=3 sw=3 sts=3 ft=c:
+ *
+ * Copyright (C) 2012-2021 the json-parser authors  All rights reserved.
+ * https://github.com/json-parser/json-parser
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *   notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *   notice, this list of conditions and the following disclaimer in the
+ *   documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+// #include "json.h"
+
+#ifdef _MSC_VER
+   #ifndef _CRT_SECURE_NO_WARNINGS
+      #define _CRT_SECURE_NO_WARNINGS
+   #endif
+#endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <limits.h>
+#include <math.h>
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+   /* C99 might give us uintptr_t and UINTPTR_MAX but they also might not be provided */
+   #include <stdint.h>
+#endif
+
+#ifndef JSON_INT_T_OVERRIDDEN
+   #if defined(_MSC_VER)
+      /* https://docs.microsoft.com/en-us/cpp/cpp/data-type-ranges */
+      #define JSON_INT_MAX 9223372036854775807LL
+   #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+      /* C99 */
+      #define JSON_INT_MAX INT_FAST64_MAX
+   #else
+      /* C89 */
+      #include <limits.h>
+      #define JSON_INT_MAX LONG_MAX
+   #endif
+#endif
+
+#ifndef JSON_INT_MAX
+#define JSON_INT_MAX (json_int_t)(((unsigned json_int_t)(-1)) / (unsigned json_int_t)2);
+#endif
+
+typedef unsigned int json_uchar;
+
+const struct _json_value json_value_none;
+
+static unsigned char hex_value (json_char c)
+{
+   if (isdigit((unsigned char)c))
+      return c - '0';
+
+   switch (c) {
+      case 'a': case 'A': return 0x0A;
+      case 'b': case 'B': return 0x0B;
+      case 'c': case 'C': return 0x0C;
+      case 'd': case 'D': return 0x0D;
+      case 'e': case 'E': return 0x0E;
+      case 'f': case 'F': return 0x0F;
+      default: return 0xFF;
+   }
+}
+
+static int would_overflow (json_int_t value, json_char b)
+{
+   return ((JSON_INT_MAX - (b - '0')) / 10 ) < value;
+}
+
+typedef struct
+{
+   size_t used_memory;
+
+   json_settings settings;
+   int first_pass;
+
+   const json_char * ptr;
+   unsigned int cur_line, cur_col;
+
+} json_state;
+
+static void * default_alloc (size_t size, int zero, void * user_data)
+{
+   (void)user_data; /* ignore unused-parameter warn */
+   return zero ? calloc (1, size) : malloc (size);
+}
+
+static void default_free (void * ptr, void * user_data)
+{
+   (void)user_data; /* ignore unused-parameter warn */
+   free (ptr);
+}
+
+static void * json_alloc (json_state * state, size_t size, int zero)
+{
+   if ((ULONG_MAX - 8 - state->used_memory) < size)
+      return 0;
+
+   if (state->settings.max_memory
+         && (state->used_memory += size) > state->settings.max_memory)
+   {
+      return 0;
+   }
+
+   return state->settings.mem_alloc (size, zero, state->settings.user_data);
+}
+
+static int new_value (json_state * state,
+                      json_value ** top, json_value ** root, json_value ** alloc,
+                      json_type type)
+{
+   json_value * value;
+   size_t values_size;
+
+   if (!state->first_pass)
+   {
+      value = *top = *alloc;
+      *alloc = (*alloc)->_reserved.next_alloc;
+
+      if (!*root)
+         *root = value;
+
+      switch (value->type)
+      {
+         case json_array:
+
+            if (value->u.array.length == 0)
+               break;
+
+            if (! (value->u.array.values = (json_value **) json_alloc
+               (state, value->u.array.length * sizeof (json_value *), 0)) )
+            {
+               return 0;
+            }
+
+            value->u.array.length = 0;
+            break;
+
+         case json_object:
+
+            if (value->u.object.length == 0)
+               break;
+
+            values_size = sizeof (*value->u.object.values) * value->u.object.length;
+
+            if (! (value->u.object.values = (json_object_entry *) json_alloc
+               #ifdef UINTPTR_MAX
+                  (state, values_size + ((uintptr_t) value->u.object.values), 0)) )
+               #else
+                  (state, values_size + ((size_t) value->u.object.values), 0)) )
+               #endif
+            {
+               return 0;
+            }
+
+            value->_reserved.object_mem = (void *) (((char *) value->u.object.values) + values_size);
+
+            value->u.object.length = 0;
+            break;
+
+         case json_string:
+
+            if (! (value->u.string.ptr = (json_char *) json_alloc
+               (state, (value->u.string.length + 1) * sizeof (json_char), 0)) )
+            {
+               return 0;
+            }
+
+            value->u.string.length = 0;
+            break;
+
+         default:
+            break;
+      };
+
+      return 1;
+   }
+
+   if (! (value = (json_value *) json_alloc
+         (state, sizeof (json_value) + state->settings.value_extra, 1)))
+   {
+      return 0;
+   }
+
+   if (!*root)
+      *root = value;
+
+   value->type = type;
+   value->parent = *top;
+
+   #ifdef JSON_TRACK_SOURCE
+      value->line = state->cur_line;
+      value->col = state->cur_col;
+   #endif
+
+   if (*alloc)
+      (*alloc)->_reserved.next_alloc = value;
+
+   *alloc = *top = value;
+
+   return 1;
+}
+
+#define whitespace \
+   case '\n': ++ state.cur_line;  state.cur_col = 0; /* FALLTHRU */ \
+   case ' ': /* FALLTHRU */ case '\t': /* FALLTHRU */ case '\r'
+
+#define string_add(b)  \
+   do { if (!state.first_pass) string [string_length] = b;  ++ string_length; } while (0);
+
+#define line_and_col \
+   state.cur_line, state.cur_col
+
+static const long
+   flag_next             = 1 << 0,
+   flag_reproc           = 1 << 1,
+   flag_need_comma       = 1 << 2,
+   flag_seek_value       = 1 << 3,
+   flag_escaped          = 1 << 4,
+   flag_string           = 1 << 5,
+   flag_need_colon       = 1 << 6,
+   flag_done             = 1 << 7,
+   flag_num_negative     = 1 << 8,
+   flag_num_zero         = 1 << 9,
+   flag_num_e            = 1 << 10,
+   flag_num_e_got_sign   = 1 << 11,
+   flag_num_e_negative   = 1 << 12,
+   flag_line_comment     = 1 << 13,
+   flag_block_comment    = 1 << 14,
+   flag_num_got_decimal  = 1 << 15;
+
+json_value * json_parse_ex (json_settings * settings,
+                            const json_char * json,
+                            size_t length,
+                            char * error_buf)
+{
+   char error [json_error_max];
+   const json_char * end;
+   json_value * top, * root, * alloc = 0;
+   json_state state = { 0 };
+   long flags = 0;
+   int num_digits = 0;
+   double num_e = 0, num_fraction = 0;
+
+   /* Skip UTF-8 BOM
+    */
+   if (length >= 3 && ((unsigned char) json [0]) == 0xEF
+                   && ((unsigned char) json [1]) == 0xBB
+                   && ((unsigned char) json [2]) == 0xBF)
+   {
+      json += 3;
+      length -= 3;
+   }
+
+   error[0] = '\0';
+   end = (json + length);
+
+   memcpy (&state.settings, settings, sizeof (json_settings));
+
+   if (!state.settings.mem_alloc)
+      state.settings.mem_alloc = default_alloc;
+
+   if (!state.settings.mem_free)
+      state.settings.mem_free = default_free;
+
+   for (state.first_pass = 1; state.first_pass >= 0; -- state.first_pass)
+   {
+      json_uchar uchar;
+      unsigned char uc_b1, uc_b2, uc_b3, uc_b4;
+      json_char * string = 0;
+      unsigned int string_length = 0;
+
+      top = root = 0;
+      flags = flag_seek_value;
+
+      state.cur_line = 1;
+
+      for (state.ptr = json ;; ++ state.ptr)
+      {
+         json_char b = (state.ptr == end ? 0 : *state.ptr);
+
+         if (flags & flag_string)
+         {
+            if (!b)
+            {  sprintf (error, "%u:%u: Unexpected EOF in string", line_and_col);
+               goto e_failed;
+            }
+
+            if (string_length > UINT_MAX - 8)
+               goto e_overflow;
+
+            if (flags & flag_escaped)
+            {
+               flags &= ~ flag_escaped;
+
+               switch (b)
+               {
+                  case 'b':  string_add ('\b');  break;
+                  case 'f':  string_add ('\f');  break;
+                  case 'n':  string_add ('\n');  break;
+                  case 'r':  string_add ('\r');  break;
+                  case 't':  string_add ('\t');  break;
+                  case 'u':
+
+                    if (end - state.ptr <= 4 ||
+                        (uc_b1 = hex_value (*++ state.ptr)) == 0xFF ||
+                        (uc_b2 = hex_value (*++ state.ptr)) == 0xFF ||
+                        (uc_b3 = hex_value (*++ state.ptr)) == 0xFF ||
+                        (uc_b4 = hex_value (*++ state.ptr)) == 0xFF)
+                    {
+                        sprintf (error, "%u:%u: Invalid character value `%c`", line_and_col, b);
+                        goto e_failed;
+                    }
+
+                    uc_b1 = (uc_b1 << 4) | uc_b2;
+                    uc_b2 = (uc_b3 << 4) | uc_b4;
+                    uchar = (uc_b1 << 8) | uc_b2;
+
+                    if ((uchar & 0xF800) == 0xD800) {
+                        json_uchar uchar2;
+
+                        if (end - state.ptr <= 6 || (*++ state.ptr) != '\\' || (*++ state.ptr) != 'u' ||
+                            (uc_b1 = hex_value (*++ state.ptr)) == 0xFF ||
+                            (uc_b2 = hex_value (*++ state.ptr)) == 0xFF ||
+                            (uc_b3 = hex_value (*++ state.ptr)) == 0xFF ||
+                            (uc_b4 = hex_value (*++ state.ptr)) == 0xFF)
+                        {
+                            sprintf (error, "%u:%u: Invalid character value `%c`", line_and_col, b);
+                            goto e_failed;
+                        }
+
+                        uc_b1 = (uc_b1 << 4) | uc_b2;
+                        uc_b2 = (uc_b3 << 4) | uc_b4;
+                        uchar2 = (uc_b1 << 8) | uc_b2;
+
+                        uchar = 0x010000 | ((uchar & 0x3FF) << 10) | (uchar2 & 0x3FF);
+                    }
+
+                    if (sizeof (json_char) >= sizeof (json_uchar) || (uchar <= 0x7F))
+                    {
+                       string_add ((json_char) uchar);
+                       break;
+                    }
+
+                    if (uchar <= 0x7FF)
+                    {
+                        if (state.first_pass)
+                           string_length += 2;
+                        else
+                        {  string [string_length ++] = 0xC0 | (uchar >> 6);
+                           string [string_length ++] = 0x80 | (uchar & 0x3F);
+                        }
+
+                        break;
+                    }
+
+                    if (uchar <= 0xFFFF) {
+                        if (state.first_pass)
+                           string_length += 3;
+                        else
+                        {  string [string_length ++] = 0xE0 | (uchar >> 12);
+                           string [string_length ++] = 0x80 | ((uchar >> 6) & 0x3F);
+                           string [string_length ++] = 0x80 | (uchar & 0x3F);
+                        }
+
+                        break;
+                    }
+
+                    if (state.first_pass)
+                       string_length += 4;
+                    else
+                    {  string [string_length ++] = 0xF0 | (uchar >> 18);
+                       string [string_length ++] = 0x80 | ((uchar >> 12) & 0x3F);
+                       string [string_length ++] = 0x80 | ((uchar >> 6) & 0x3F);
+                       string [string_length ++] = 0x80 | (uchar & 0x3F);
+                    }
+
+                    break;
+
+                  default:
+                     string_add (b);
+               };
+
+               continue;
+            }
+
+            if (b == '\\')
+            {
+               flags |= flag_escaped;
+               continue;
+            }
+
+            if (b == '"')
+            {
+               if (!state.first_pass)
+                  string [string_length] = 0;
+
+               flags &= ~ flag_string;
+               string = 0;
+
+               switch (top->type)
+               {
+                  case json_string:
+
+                     top->u.string.length = string_length;
+                     flags |= flag_next;
+
+                     break;
+
+                  case json_object:
+
+                     if (state.first_pass) {
+                        json_char **chars = (json_char **) &top->u.object.values;
+                        chars[0] += string_length + 1;
+                     }
+                     else
+                     {
+                        top->u.object.values [top->u.object.length].name
+                           = (json_char *) top->_reserved.object_mem;
+
+                        top->u.object.values [top->u.object.length].name_length
+                           = string_length;
+
+                        (*(json_char **) &top->_reserved.object_mem) += string_length + 1;
+                     }
+
+                     flags |= flag_seek_value | flag_need_colon;
+                     continue;
+
+                  default:
+                     break;
+               };
+            }
+            else
+            {
+               string_add (b);
+               continue;
+            }
+         }
+
+         if (state.settings.settings & json_enable_comments)
+         {
+            if (flags & (flag_line_comment | flag_block_comment))
+            {
+               if (flags & flag_line_comment)
+               {
+                  if (b == '\r' || b == '\n' || !b)
+                  {
+                     flags &= ~ flag_line_comment;
+                     -- state.ptr;  /* so null can be reproc'd */
+                  }
+
+                  continue;
+               }
+
+               if (flags & flag_block_comment)
+               {
+                  if (!b)
+                  {  sprintf (error, "%u:%u: Unexpected EOF in block comment", line_and_col);
+                     goto e_failed;
+                  }
+
+                  if (b == '*' && state.ptr < (end - 1) && state.ptr [1] == '/')
+                  {
+                     flags &= ~ flag_block_comment;
+                     ++ state.ptr;  /* skip closing sequence */
+                  }
+
+                  continue;
+               }
+            }
+            else if (b == '/')
+            {
+               if (! (flags & (flag_seek_value | flag_done)) && top->type != json_object)
+               {  sprintf (error, "%u:%u: Comment not allowed here", line_and_col);
+                  goto e_failed;
+               }
+
+               if (++ state.ptr == end)
+               {  sprintf (error, "%u:%u: EOF unexpected", line_and_col);
+                  goto e_failed;
+               }
+
+               switch (b = *state.ptr)
+               {
+                  case '/':
+                     flags |= flag_line_comment;
+                     continue;
+
+                  case '*':
+                     flags |= flag_block_comment;
+                     continue;
+
+                  default:
+                     sprintf (error, "%u:%u: Unexpected `%c` in comment opening sequence", line_and_col, b);
+                     goto e_failed;
+               };
+            }
+         }
+
+         if (flags & flag_done)
+         {
+            if (!b)
+               break;
+
+            switch (b)
+            {
+               whitespace:
+                  continue;
+
+               default:
+
+                  sprintf (error, "%u:%u: Trailing garbage: `%c`",
+                           line_and_col, b);
+
+                  goto e_failed;
+            };
+         }
+
+         if (flags & flag_seek_value)
+         {
+            switch (b)
+            {
+               whitespace:
+                  continue;
+
+               case ']':
+
+                  if (top && top->type == json_array)
+                     flags = (flags & ~ (flag_need_comma | flag_seek_value)) | flag_next;
+                  else
+                  {  sprintf (error, "%u:%u: Unexpected `]`", line_and_col);
+                     goto e_failed;
+                  }
+
+                  break;
+
+               default:
+
+                  if (flags & flag_need_comma)
+                  {
+                     if (b == ',')
+                     {  flags &= ~ flag_need_comma;
+                        continue;
+                     }
+                     else
+                     {
+                        sprintf (error, "%u:%u: Expected `,` before `%c`",
+                                 line_and_col, b);
+
+                        goto e_failed;
+                     }
+                  }
+
+                  if (flags & flag_need_colon)
+                  {
+                     if (b == ':')
+                     {  flags &= ~ flag_need_colon;
+                        continue;
+                     }
+                     else
+                     {
+                        sprintf (error, "%u:%u: Expected `:` before `%c`",
+                                 line_and_col, b);
+
+                        goto e_failed;
+                     }
+                  }
+
+                  flags &= ~ flag_seek_value;
+
+                  switch (b)
+                  {
+                     case '{':
+
+                        if (!new_value (&state, &top, &root, &alloc, json_object))
+                           goto e_alloc_failure;
+
+                        continue;
+
+                     case '[':
+
+                        if (!new_value (&state, &top, &root, &alloc, json_array))
+                           goto e_alloc_failure;
+
+                        flags |= flag_seek_value;
+                        continue;
+
+                     case '"':
+
+                        if (!new_value (&state, &top, &root, &alloc, json_string))
+                           goto e_alloc_failure;
+
+                        flags |= flag_string;
+
+                        string = top->u.string.ptr;
+                        string_length = 0;
+
+                        continue;
+
+                     case 't':
+
+                        if ((end - state.ptr) <= 3 || *(++ state.ptr) != 'r' ||
+                            *(++ state.ptr) != 'u' || *(++ state.ptr) != 'e')
+                        {
+                           goto e_unknown_value;
+                        }
+
+                        if (!new_value (&state, &top, &root, &alloc, json_boolean))
+                           goto e_alloc_failure;
+
+                        top->u.boolean = 1;
+
+                        flags |= flag_next;
+                        break;
+
+                     case 'f':
+
+                        if ((end - state.ptr) <= 4 || *(++ state.ptr) != 'a' ||
+                            *(++ state.ptr) != 'l' || *(++ state.ptr) != 's' ||
+                            *(++ state.ptr) != 'e')
+                        {
+                           goto e_unknown_value;
+                        }
+
+                        if (!new_value (&state, &top, &root, &alloc, json_boolean))
+                           goto e_alloc_failure;
+
+                        flags |= flag_next;
+                        break;
+
+                     case 'n':
+
+                        if ((end - state.ptr) <= 3 || *(++ state.ptr) != 'u' ||
+                            *(++ state.ptr) != 'l' || *(++ state.ptr) != 'l')
+                        {
+                           goto e_unknown_value;
+                        }
+
+                        if (!new_value (&state, &top, &root, &alloc, json_null))
+                           goto e_alloc_failure;
+
+                        flags |= flag_next;
+                        break;
+
+                     default:
+
+                        if (isdigit ((unsigned char) b) || b == '-')
+                        {
+                           if (!new_value (&state, &top, &root, &alloc, json_integer))
+                              goto e_alloc_failure;
+
+                           if (!state.first_pass)
+                           {
+                              while (isdigit ((unsigned char) b) || b == '+' || b == '-'
+                                        || b == 'e' || b == 'E' || b == '.')
+                              {
+                                 if ( (++ state.ptr) == end)
+                                 {
+                                    b = 0;
+                                    break;
+                                 }
+
+                                 b = *state.ptr;
+                              }
+
+                              flags |= flag_next | flag_reproc;
+                              break;
+                           }
+
+                           flags &= ~ (flag_num_negative | flag_num_e |
+                                        flag_num_e_got_sign | flag_num_e_negative |
+                                           flag_num_zero);
+
+                           num_digits = 0;
+                           num_fraction = 0;
+                           num_e = 0;
+
+                           if (b != '-')
+                           {
+                              flags |= flag_reproc;
+                              break;
+                           }
+
+                           flags |= flag_num_negative;
+                           continue;
+                        }
+                        else
+                        {  sprintf (error, "%u:%u: Unexpected `%c` when seeking value", line_and_col, b);
+                           goto e_failed;
+                        }
+                  };
+            };
+         }
+         else
+         {
+            switch (top->type)
+            {
+            case json_object:
+
+               switch (b)
+               {
+                  whitespace:
+                     continue;
+
+                  case '"':
+
+                     if (flags & flag_need_comma)
+                     {  sprintf (error, "%u:%u: Expected `,` before `\"`", line_and_col);
+                        goto e_failed;
+                     }
+
+                     flags |= flag_string;
+
+                     string = (json_char *) top->_reserved.object_mem;
+                     string_length = 0;
+
+                     break;
+
+                  case '}':
+
+                     flags = (flags & ~ flag_need_comma) | flag_next;
+                     break;
+
+                  case ',':
+
+                     if (flags & flag_need_comma)
+                     {
+                        flags &= ~ flag_need_comma;
+                        break;
+                     } /* FALLTHRU */
+
+                  default:
+                     sprintf (error, "%u:%u: Unexpected `%c` in object", line_and_col, b);
+                     goto e_failed;
+               };
+
+               break;
+
+            case json_integer:
+            case json_double:
+
+               if (isdigit ((unsigned char)b))
+               {
+                  ++ num_digits;
+
+                  if (top->type == json_integer || flags & flag_num_e)
+                  {
+                     if (! (flags & flag_num_e))
+                     {
+                        if (flags & flag_num_zero)
+                        {  sprintf (error, "%u:%u: Unexpected `0` before `%c`", line_and_col, b);
+                           goto e_failed;
+                        }
+
+                        if (num_digits == 1 && b == '0')
+                           flags |= flag_num_zero;
+                     }
+                     else
+                     {
+                        flags |= flag_num_e_got_sign;
+                        num_e = (num_e * 10) + (b - '0');
+                        continue;
+                     }
+
+                     if (would_overflow(top->u.integer, b))
+                     {
+                        json_int_t integer = top->u.integer;
+                        -- num_digits;
+                        -- state.ptr;
+                        top->type = json_double;
+                        top->u.dbl = (double)integer;
+                        continue;
+                     }
+
+                     top->u.integer = (top->u.integer * 10) + (b - '0');
+                     continue;
+                  }
+
+                  if (flags & flag_num_got_decimal)
+                     num_fraction = (num_fraction * 10) + (b - '0');
+                  else
+                     top->u.dbl = (top->u.dbl * 10) + (b - '0');
+
+                  continue;
+               }
+
+               if (b == '+' || b == '-')
+               {
+                  if ( (flags & flag_num_e) && !(flags & flag_num_e_got_sign))
+                  {
+                     flags |= flag_num_e_got_sign;
+
+                     if (b == '-')
+                        flags |= flag_num_e_negative;
+
+                     continue;
+                  }
+               }
+               else if (b == '.' && top->type == json_integer)
+               {
+                  json_int_t integer = top->u.integer;
+
+                  if (!num_digits)
+                  {  sprintf (error, "%u:%u: Expected digit before `.`", line_and_col);
+                     goto e_failed;
+                  }
+
+                  top->type = json_double;
+                  top->u.dbl = (double) integer;
+
+                  flags |= flag_num_got_decimal;
+                  num_digits = 0;
+                  continue;
+               }
+
+               if (! (flags & flag_num_e))
+               {
+                  if (top->type == json_double)
+                  {
+                     if (!num_digits)
+                     {  sprintf (error, "%u:%u: Expected digit after `.`", line_and_col);
+                        goto e_failed;
+                     }
+
+                     top->u.dbl += num_fraction / pow (10.0, num_digits);
+                  }
+
+                  if (b == 'e' || b == 'E')
+                  {
+                     flags |= flag_num_e;
+
+                     if (top->type == json_integer)
+                     {
+                        json_int_t integer = top->u.integer;
+                        top->type = json_double;
+                        top->u.dbl = (double) integer;
+                     }
+
+                     num_digits = 0;
+                     flags &= ~ flag_num_zero;
+
+                     continue;
+                  }
+               }
+               else
+               {
+                  if (!num_digits)
+                  {  sprintf (error, "%u:%u: Expected digit after `e`", line_and_col);
+                     goto e_failed;
+                  }
+
+                  top->u.dbl *= pow (10.0, (flags & flag_num_e_negative ? - num_e : num_e));
+               }
+
+               if (flags & flag_num_negative)
+               {
+                  if (top->type == json_integer)
+                     top->u.integer = - top->u.integer;
+                  else
+                     top->u.dbl = - top->u.dbl;
+               }
+
+               flags |= flag_next | flag_reproc;
+               break;
+
+            default:
+               break;
+            };
+         }
+
+         if (flags & flag_reproc)
+         {
+            flags &= ~ flag_reproc;
+            -- state.ptr;
+         }
+
+         if (flags & flag_next)
+         {
+            flags = (flags & ~ flag_next) | flag_need_comma;
+
+            if (!top->parent)
+            {
+               /* root value done */
+
+               flags |= flag_done;
+               continue;
+            }
+
+            if (top->parent->type == json_array)
+               flags |= flag_seek_value;
+
+            if (!state.first_pass)
+            {
+               json_value * parent = top->parent;
+
+               switch (parent->type)
+               {
+                  case json_object:
+
+                     parent->u.object.values
+                        [parent->u.object.length].value = top;
+
+                     break;
+
+                  case json_array:
+
+                     parent->u.array.values
+                           [parent->u.array.length] = top;
+
+                     break;
+
+                  default:
+                     break;
+               };
+            }
+
+            if ( (++ top->parent->u.array.length) > UINT_MAX - 8)
+               goto e_overflow;
+
+            top = top->parent;
+
+            continue;
+         }
+      }
+
+      alloc = root;
+   }
+
+   return root;
+
+e_unknown_value:
+
+   sprintf (error, "%u:%u: Unknown value", line_and_col);
+   goto e_failed;
+
+e_alloc_failure:
+
+   strcpy (error, "Memory allocation failure");
+   goto e_failed;
+
+e_overflow:
+
+   sprintf (error, "%u:%u: Too long (caught overflow)", line_and_col);
+   goto e_failed;
+
+e_failed:
+
+   if (error_buf)
+   {
+      if (*error)
+         strcpy (error_buf, error);
+      else
+         strcpy (error_buf, "Unknown error");
+   }
+
+   if (state.first_pass)
+      alloc = root;
+
+   while (alloc)
+   {
+      top = alloc->_reserved.next_alloc;
+      state.settings.mem_free (alloc, state.settings.user_data);
+      alloc = top;
+   }
+
+   if (!state.first_pass)
+      json_value_free_ex (&state.settings, root);
+
+   return 0;
+}
+
+json_value * json_parse (const json_char * json, size_t length)
+{
+   json_settings settings = { 0 };
+   return json_parse_ex (&settings, json, length, 0);
+}
+
+void json_value_free_ex (json_settings * settings, json_value * value)
+{
+   json_value * cur_value;
+
+   if (!value)
+      return;
+
+   value->parent = 0;
+
+   while (value)
+   {
+      switch (value->type)
+      {
+         case json_array:
+
+            if (!value->u.array.length)
+            {
+               settings->mem_free (value->u.array.values, settings->user_data);
+               break;
+            }
+
+            value = value->u.array.values [-- value->u.array.length];
+            continue;
+
+         case json_object:
+
+            if (!value->u.object.length)
+            {
+               settings->mem_free (value->u.object.values, settings->user_data);
+               break;
+            }
+
+            value = value->u.object.values [-- value->u.object.length].value;
+            continue;
+
+         case json_string:
+
+            settings->mem_free (value->u.string.ptr, settings->user_data);
+            break;
+
+         default:
+            break;
+      };
+
+      cur_value = value;
+      value = value->parent;
+      settings->mem_free (cur_value, settings->user_data);
+   }
+}
+
+void json_value_free (json_value * value)
+{
+   json_settings settings = { 0 };
+   settings.mem_free = default_free;
+   json_value_free_ex (&settings, value);
+}
+// LCOV_EXCL_STOP
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #include <srs_protocol_json.hpp>
 
@@ -27,42 +1384,42 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 using namespace std;
 
 #include <srs_kernel_log.hpp>
-#include <srs_protocol_amf0.hpp>
 #include <srs_kernel_utility.hpp>
+#include <srs_protocol_amf0.hpp>
 
 /* json encode
  cout<< SRS_JOBJECT_START
- << SRS_JFIELD_STR("name", "srs") << SRS_JFIELD_CONT
- << SRS_JFIELD_ORG("version", 100) << SRS_JFIELD_CONT
- << SRS_JFIELD_NAME("features") << SRS_JOBJECT_START
- << SRS_JFIELD_STR("rtmp", "released") << SRS_JFIELD_CONT
- << SRS_JFIELD_STR("hls", "released") << SRS_JFIELD_CONT
- << SRS_JFIELD_STR("dash", "plan")
- << SRS_JOBJECT_END << SRS_JFIELD_CONT
- << SRS_JFIELD_STR("author", "srs team")
- << SRS_JOBJECT_END
+         << SRS_JFIELD_STR("name", "srs") << SRS_JFIELD_CONT
+         << SRS_JFIELD_ORG("version", 100) << SRS_JFIELD_CONT
+         << SRS_JFIELD_NAME("features") << SRS_JOBJECT_START
+             << SRS_JFIELD_STR("rtmp", "released") << SRS_JFIELD_CONT
+             << SRS_JFIELD_STR("hls", "released") << SRS_JFIELD_CONT
+             << SRS_JFIELD_STR("dash", "plan")
+         << SRS_JOBJECT_END << SRS_JFIELD_CONT
+         << SRS_JFIELD_STR("author", "srs team")
+     << SRS_JOBJECT_END
  it's:
  cont<< "{"
- << "name:" << "srs" << ","
- << "version:" << 100 << ","
- << "features:" << "{"
- << "rtmp:" << "released" << ","
- << "hls:" << "released" << ","
- << "dash:" << "plan"
- << "}" << ","
- << "author:" << "srs team"
- << "}"
+         << "name:" << "srs" << ","
+         << "version:" << 100 << ","
+         << "features:" << "{"
+             << "rtmp:" << "released" << ","
+             << "hls:" << "released" << ","
+             << "dash:" << "plan"
+         << "}" << ","
+         << "author:" << "srs team"
+     << "}"
  that is:
  """
  {
- "name": "srs",
- "version": 100,
- "features": {
- "rtmp": "released",
- "hls": "released",
- "dash": "plan"
- },
- "author": "srs team"
+     "name": "srs",
+     "version": 100,
+     "features": {
+         "rtmp": "released",
+         "hls": "released",
+         "dash": "plan"
+     },
+     "author": "srs team"
  }
  """
  */
@@ -71,7 +1428,7 @@ using namespace std;
 #define SRS_JFIELD_OBJ(k) SRS_JFIELD_NAME(k) << SRS_JOBJECT_START
 #define SRS_JFIELD_STR(k, v) SRS_JFIELD_NAME(k) << "\"" << v << "\""
 #define SRS_JFIELD_ORG(k, v) SRS_JFIELD_NAME(k) << std::dec << v
-#define SRS_JFIELD_BOOL(k, v) SRS_JFIELD_ORG(k, (v? "true":"false"))
+#define SRS_JFIELD_BOOL(k, v) SRS_JFIELD_ORG(k, (v ? "true" : "false"))
 #define SRS_JFIELD_NULL(k) SRS_JFIELD_NAME(k) << "null"
 #define SRS_JFIELD_ERROR(ret) "\"" << "code" << "\":" << ret
 #define SRS_JFIELD_CONT ","
@@ -79,101 +1436,35 @@ using namespace std;
 #define SRS_JARRAY_START "["
 #define SRS_JARRAY_END "]"
 
-#ifdef SRS_JSON_USE_NXJSON
-
-////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////
-/*
- * Copyright (c) 2013 Yaroslav Stavnichiy <yarosla@gmail.com>
- *
- * This file is part of NXJSON.
- *
- * NXJSON is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3
- * of the License, or (at your option) any later version.
- *
- * NXJSON is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with NXJSON. If not, see <http://www.gnu.org/licenses/>.
- */
-
-#ifndef NXJSON_H
-#define NXJSON_H
-
-#ifdef  __cplusplus
-extern "C" {
-#endif
-
-
-typedef enum nx_json_type {
-  NX_JSON_NULL,    // this is null value
-  NX_JSON_OBJECT,  // this is an object; properties can be found in child nodes
-  NX_JSON_ARRAY,   // this is an array; items can be found in child nodes
-  NX_JSON_STRING,  // this is a string; value can be found in text_value field
-  NX_JSON_INTEGER, // this is an integer; value can be found in int_value field
-  NX_JSON_DOUBLE,  // this is a double; value can be found in dbl_value field
-  NX_JSON_BOOL     // this is a boolean; value can be found in int_value field
-} nx_json_type;
-
-typedef struct nx_json {
-  nx_json_type type;       // type of json node, see above
-  const char* key;         // key of the property; for object's children only
-  const char* text_value;  // text value of STRING node
-  long int_value;          // the value of INTEGER or BOOL node
-  double dbl_value;        // the value of DOUBLE node
-  int length;              // number of children of OBJECT or ARRAY
-  struct nx_json* child;   // points to first child
-  struct nx_json* next;    // points to next child
-  struct nx_json* last_child;
-} nx_json;
-
-typedef int (*nx_json_unicode_encoder)(unsigned int codepoint, char* p, char** endp);
-
-extern nx_json_unicode_encoder nx_json_unicode_to_utf8;
-
-const nx_json* nx_json_parse(char* text, nx_json_unicode_encoder encoder);
-const nx_json* nx_json_parse_utf8(char* text);
-void nx_json_free(const nx_json* js);
-const nx_json* nx_json_get(const nx_json* json, const char* key); // get object's property by key
-const nx_json* nx_json_item(const nx_json* json, int idx); // get array element by index
-
-
-#ifdef  __cplusplus
-}
-#endif
-
-#endif  /* NXJSON_H */
-
-#endif
-
 // Json marker
-#define SRS_JSON_Boolean                   0x01
-#define SRS_JSON_String                    0x02
-#define SRS_JSON_Object                    0x03
-#define SRS_JSON_Integer                   0x04
-#define SRS_JSON_Number                    0x05
-#define SRS_JSON_Null                      0x06
-#define SRS_JSON_Array                     0x07
+#define SRS_JSON_Boolean 0x01
+#define SRS_JSON_String 0x02
+#define SRS_JSON_Object 0x03
+#define SRS_JSON_Integer 0x04
+#define SRS_JSON_Number 0x05
+#define SRS_JSON_Null 0x06
+#define SRS_JSON_Array 0x07
 
 class SrsJsonString : public SrsJsonAny
 {
 public:
     std::string value;
 
-    SrsJsonString(const char* _value) 
+    SrsJsonString(const char *v)
     {
-        marker = SRS_JSON_String;
-        if (_value) {
-            value = _value;
+        marker_ = SRS_JSON_String;
+        if (v) {
+            value = v;
         }
     }
-    virtual ~SrsJsonString() 
+    SrsJsonString(const char *v, int s)
+    {
+        marker_ = SRS_JSON_String;
+        if (v) {
+            value.append(v, s);
+        }
+    }
+    virtual ~SrsJsonString()
     {
     }
 };
@@ -183,12 +1474,12 @@ class SrsJsonBoolean : public SrsJsonAny
 public:
     bool value;
 
-    SrsJsonBoolean(bool _value) 
+    SrsJsonBoolean(bool v)
     {
-        marker = SRS_JSON_Boolean;
-        value = _value;
+        marker_ = SRS_JSON_Boolean;
+        value = v;
     }
-    virtual ~SrsJsonBoolean() 
+    virtual ~SrsJsonBoolean()
     {
     }
 };
@@ -198,12 +1489,12 @@ class SrsJsonInteger : public SrsJsonAny
 public:
     int64_t value;
 
-    SrsJsonInteger(int64_t _value) 
+    SrsJsonInteger(int64_t v)
     {
-        marker = SRS_JSON_Integer;
-        value = _value;
+        marker_ = SRS_JSON_Integer;
+        value = v;
     }
-    virtual ~SrsJsonInteger() 
+    virtual ~SrsJsonInteger()
     {
     }
 };
@@ -213,12 +1504,12 @@ class SrsJsonNumber : public SrsJsonAny
 public:
     double value;
 
-    SrsJsonNumber(double _value) 
+    SrsJsonNumber(double v)
     {
-        marker = SRS_JSON_Number;
-        value = _value;
+        marker_ = SRS_JSON_Number;
+        value = v;
     }
-    virtual ~SrsJsonNumber() 
+    virtual ~SrsJsonNumber()
     {
     }
 };
@@ -226,16 +1517,18 @@ public:
 class SrsJsonNull : public SrsJsonAny
 {
 public:
-    SrsJsonNull() {
-        marker = SRS_JSON_Null;
+    SrsJsonNull()
+    {
+        marker_ = SRS_JSON_Null;
     }
-    virtual ~SrsJsonNull() {
+    virtual ~SrsJsonNull()
+    {
     }
 };
 
 SrsJsonAny::SrsJsonAny()
 {
-    marker = 0;
+    marker_ = 0;
 }
 
 SrsJsonAny::~SrsJsonAny()
@@ -244,427 +1537,472 @@ SrsJsonAny::~SrsJsonAny()
 
 bool SrsJsonAny::is_string()
 {
-    return marker == SRS_JSON_String;
+    return marker_ == SRS_JSON_String;
 }
 
 bool SrsJsonAny::is_boolean()
 {
-    return marker == SRS_JSON_Boolean;
+    return marker_ == SRS_JSON_Boolean;
 }
 
 bool SrsJsonAny::is_number()
 {
-    return marker == SRS_JSON_Number;
+    return marker_ == SRS_JSON_Number;
 }
 
 bool SrsJsonAny::is_integer()
 {
-    return marker == SRS_JSON_Integer;
+    return marker_ == SRS_JSON_Integer;
 }
 
 bool SrsJsonAny::is_object()
 {
-    return marker == SRS_JSON_Object;
+    return marker_ == SRS_JSON_Object;
 }
 
 bool SrsJsonAny::is_array()
 {
-    return marker == SRS_JSON_Array;
+    return marker_ == SRS_JSON_Array;
 }
 
 bool SrsJsonAny::is_null()
 {
-    return marker == SRS_JSON_Null;
+    return marker_ == SRS_JSON_Null;
 }
 
 string SrsJsonAny::to_str()
 {
-    SrsJsonString* p = dynamic_cast<SrsJsonString*>(this);
+    SrsJsonString *p = dynamic_cast<SrsJsonString *>(this);
     srs_assert(p != NULL);
     return p->value;
 }
 
 bool SrsJsonAny::to_boolean()
 {
-    SrsJsonBoolean* p = dynamic_cast<SrsJsonBoolean*>(this);
+    SrsJsonBoolean *p = dynamic_cast<SrsJsonBoolean *>(this);
     srs_assert(p != NULL);
     return p->value;
 }
 
 int64_t SrsJsonAny::to_integer()
 {
-    SrsJsonInteger* p = dynamic_cast<SrsJsonInteger*>(this);
+    SrsJsonInteger *p = dynamic_cast<SrsJsonInteger *>(this);
     srs_assert(p != NULL);
     return p->value;
 }
 
 double SrsJsonAny::to_number()
 {
-    SrsJsonNumber* p = dynamic_cast<SrsJsonNumber*>(this);
+    SrsJsonNumber *p = dynamic_cast<SrsJsonNumber *>(this);
     srs_assert(p != NULL);
     return p->value;
 }
 
-SrsJsonObject* SrsJsonAny::to_object()
+SrsJsonObject *SrsJsonAny::to_object()
 {
-    SrsJsonObject* p = dynamic_cast<SrsJsonObject*>(this);
+    SrsJsonObject *p = dynamic_cast<SrsJsonObject *>(this);
     srs_assert(p != NULL);
     return p;
 }
 
-SrsJsonArray* SrsJsonAny::to_array()
+SrsJsonArray *SrsJsonAny::to_array()
 {
-    SrsJsonArray* p = dynamic_cast<SrsJsonArray*>(this);
+    SrsJsonArray *p = dynamic_cast<SrsJsonArray *>(this);
     srs_assert(p != NULL);
     return p;
+}
+
+// @see https://github.com/ossrs/srs/pull/1758/files#diff-9568479ef5cb0aa1ade2381e11e9c066c01bf9c4bbed70ffa27094d08bb27380R370
+// @see https://github.com/json-parser/json-builder/blob/2d8c6671926d104c5dcd43ccd2b1431a3f0299e0/json-builder.c#L495
+string json_serialize_string(const string &v)
+{
+    stringstream ss;
+
+    ss << "\"";
+
+    const char *start = v.data();
+    const char *end = start + v.length();
+    for (const char *p = start; p < end; ++p) {
+        switch (*p) {
+        case '"':
+            ss << '\\' << '"';
+            break;
+        case '\\':
+            ss << '\\' << '\\';
+            break;
+        case '\b':
+            ss << '\\' << 'b';
+            break;
+        case '\f':
+            ss << '\\' << 'f';
+            break;
+        case '\n':
+            ss << '\\' << 'n';
+            break;
+        case '\r':
+            ss << '\\' << 'r';
+            break;
+        case '\t':
+            ss << '\\' << 't';
+            break;
+        default:
+            ss << *p;
+        }
+    }
+
+    ss << "\"";
+
+    return ss.str();
 }
 
 string SrsJsonAny::dumps()
 {
-    switch (marker) {
-        case SRS_JSON_String: {
-            return "\"" + to_str() + "\"";
-        }
-        case SRS_JSON_Boolean: {
-            return to_boolean()? "true":"false";
-        }
-        case SRS_JSON_Integer: {
-            return srs_int2str(to_integer());
-        }
-        case SRS_JSON_Number: {
-            // len(max int64_t) is 20, plus one "+-."
-            char tmp[22];
-            snprintf(tmp, 22, "%.6f", to_number());
-            return tmp;
-        }
-        case SRS_JSON_Null: {
-            return "null";
-        }
-        case SRS_JSON_Object: {
-            SrsJsonObject* obj = to_object();
-            return obj->dumps();
-        }
-        case SRS_JSON_Array: {
-            SrsJsonArray* arr = to_array();
-            return arr->dumps();
-        }
-        default: {
-            break;
-        }
+    switch (marker_) {
+    case SRS_JSON_String: {
+        SrsJsonString *p = dynamic_cast<SrsJsonString *>(this);
+        srs_assert(p != NULL);
+        return json_serialize_string(p->value);
     }
-    
-    return "null";
+    case SRS_JSON_Boolean: {
+        return to_boolean() ? "true" : "false";
+    }
+    case SRS_JSON_Integer: {
+        return srs_strconv_format_int(to_integer());
+    }
+    case SRS_JSON_Number: {
+        // len(max int64_t) is 20, plus one "+-."
+        char tmp[21 + 1];
+        snprintf(tmp, sizeof(tmp), "%.2f", to_number());
+        return tmp;
+    }
+    case SRS_JSON_Null: {
+        return "null";
+    }
+    case SRS_JSON_Object: {
+        SrsJsonObject *obj = to_object();
+        return obj->dumps();
+    }
+    case SRS_JSON_Array: {
+        SrsJsonArray *arr = to_array();
+        return arr->dumps();
+    }
+    default: {
+        return "null";
+    }
+    }
 }
 
-SrsAmf0Any* SrsJsonAny::to_amf0()
+SrsAmf0Any *SrsJsonAny::to_amf0()
 {
-    switch (marker) {
-        case SRS_JSON_String: {
-            return SrsAmf0Any::str(to_str().c_str());
-        }
-        case SRS_JSON_Boolean: {
-            return SrsAmf0Any::boolean(to_boolean());
-        }
-        case SRS_JSON_Integer: {
-            return SrsAmf0Any::number(to_integer());
-        }
-        case SRS_JSON_Number: {
-            return SrsAmf0Any::number(to_number());
-        }
-        case SRS_JSON_Null: {
-            return SrsAmf0Any::null();
-        }
-        case SRS_JSON_Object: {
-            // json object must override this method.
-            srs_assert(false);
-        }
-        case SRS_JSON_Array: {
-            // json array must override this method.
-            srs_assert(false);
-        }
-        default: {
-            break;
-        }
+    switch (marker_) {
+    case SRS_JSON_String: {
+        return SrsAmf0Any::str(to_str().c_str());
     }
-    
-    return SrsAmf0Any::null();
+    case SRS_JSON_Boolean: {
+        return SrsAmf0Any::boolean(to_boolean());
+    }
+    case SRS_JSON_Integer: {
+        return SrsAmf0Any::number(to_integer());
+    }
+    case SRS_JSON_Number: {
+        return SrsAmf0Any::number(to_number());
+    }
+    case SRS_JSON_Null: {
+        return SrsAmf0Any::null();
+    }
+    case SRS_JSON_Object: {
+        // json object must override this method.
+        srs_assert(false);
+    }
+    case SRS_JSON_Array: {
+        // json array must override this method.
+        srs_assert(false);
+    }
+    default: {
+        return SrsAmf0Any::null();
+    }
+    }
 }
 
-SrsJsonAny* SrsJsonAny::str(const char* value)
+SrsJsonAny *SrsJsonAny::str(const char *value)
 {
     return new SrsJsonString(value);
 }
 
-SrsJsonAny* SrsJsonAny::boolean(bool value)
+SrsJsonAny *SrsJsonAny::str(const char *value, int length)
+{
+    return new SrsJsonString(value, length);
+}
+
+SrsJsonAny *SrsJsonAny::boolean(bool value)
 {
     return new SrsJsonBoolean(value);
 }
 
-SrsJsonAny* SrsJsonAny::integer(int64_t value)
+SrsJsonAny *SrsJsonAny::integer(int64_t value)
 {
     return new SrsJsonInteger(value);
 }
 
-SrsJsonAny* SrsJsonAny::number(double value)
+SrsJsonAny *SrsJsonAny::number(double value)
 {
     return new SrsJsonNumber(value);
 }
 
-SrsJsonAny* SrsJsonAny::null()
+SrsJsonAny *SrsJsonAny::null()
 {
     return new SrsJsonNull();
 }
 
-SrsJsonObject* SrsJsonAny::object()
+SrsJsonObject *SrsJsonAny::object()
 {
     return new SrsJsonObject();
 }
 
-SrsJsonArray* SrsJsonAny::array()
+SrsJsonArray *SrsJsonAny::array()
 {
     return new SrsJsonArray();
 }
 
-#ifdef SRS_JSON_USE_NXJSON
-SrsJsonAny* srs_json_parse_tree_nx_json(const nx_json* node)
+SrsJsonAny *srs_json_parse_tree(json_value *node)
 {
     if (!node) {
         return NULL;
     }
-    
+
     switch (node->type) {
-        case NX_JSON_NULL:
-            return SrsJsonAny::null();
-        case NX_JSON_STRING:
-            return SrsJsonAny::str(node->text_value);
-        case NX_JSON_INTEGER:
-            return SrsJsonAny::integer(node->int_value);
-        case NX_JSON_DOUBLE:
-            return SrsJsonAny::number(node->dbl_value);
-        case NX_JSON_BOOL:
-            return SrsJsonAny::boolean(node->int_value != 0);
-        case NX_JSON_OBJECT: {
-            SrsJsonObject* obj = SrsJsonAny::object();
-            for (nx_json* p = node->child; p != NULL; p = p->next) {
-                SrsJsonAny* value = srs_json_parse_tree_nx_json(p);
-                if (value) {
-                    obj->set(p->key, value);
-                }
+    case json_null:
+        return SrsJsonAny::null();
+    case json_string:
+        return SrsJsonAny::str(node->u.string.ptr, node->u.string.length);
+    case json_integer:
+        return SrsJsonAny::integer(node->u.integer);
+    case json_double:
+        return SrsJsonAny::number(node->u.dbl);
+    case json_boolean:
+        return SrsJsonAny::boolean(node->u.boolean != 0);
+    case json_object: {
+        SrsJsonObject *obj = SrsJsonAny::object();
+        for (int i = 0; i < (int)node->u.object.length; i++) {
+            json_object_entry &entry = node->u.object.values[i];
+            SrsJsonAny *value = srs_json_parse_tree(entry.value);
+
+            if (!value) {
+                srs_freep(obj);
+                return NULL;
             }
-            return obj;
+
+            obj->set(string(entry.name, entry.name_length), value);
         }
-        case NX_JSON_ARRAY: {
-            SrsJsonArray* arr = SrsJsonAny::array();
-            for (nx_json* p = node->child; p != NULL; p = p->next) {
-                SrsJsonAny* value = srs_json_parse_tree_nx_json(p);
-                if (value) {
-                    arr->add(value);
-                }
-            }
-            return arr;
-        }
+        return obj;
     }
-    
-    return NULL;
+    case json_array: {
+        SrsJsonArray *arr = SrsJsonAny::array();
+        for (int i = 0; i < (int)node->u.array.length; i++) {
+            json_value *p = node->u.array.values[i];
+            SrsJsonAny *value = srs_json_parse_tree(p);
+
+            if (!value) {
+                srs_freep(arr);
+                return NULL;
+            }
+
+            arr->add(value);
+        }
+        return arr;
+    }
+    default:
+        return NULL;
+    }
 }
 
-SrsJsonAny* SrsJsonAny::loads(char* str)
+SrsJsonAny *SrsJsonAny::loads(string str)
 {
-    if (!str) {
-        return NULL;
-    }
-    
-    if (strlen(str) == 0) {
+    if (str.empty()) {
         return NULL;
     }
 
-    // TODO: copy str for nx_json modify it.
-    string s = str;
-    const nx_json* o = nx_json_parse((char*)s.data(), 0);
-    
-    SrsJsonAny* json = srs_json_parse_tree_nx_json(o);
-    
-    if (o) {
-        nx_json_free(o);
-    }
-    
-    return json;
+    json_value *j = json_parse(str.data(), str.length());
+    SrsJsonAny *sj = srs_json_parse_tree(j);
+    json_value_free(j);
+
+    return sj;
 }
-#endif
 
 SrsJsonObject::SrsJsonObject()
 {
-    marker = SRS_JSON_Object;
+    marker_ = SRS_JSON_Object;
 }
 
 SrsJsonObject::~SrsJsonObject()
 {
     std::vector<SrsJsonObjectPropertyType>::iterator it;
-    for (it = properties.begin(); it != properties.end(); ++it) {
+    for (it = properties_.begin(); it != properties_.end(); ++it) {
         SrsJsonObjectPropertyType item = *it;
-        SrsJsonAny* obj = item.second;
+        SrsJsonAny *obj = item.second;
         srs_freep(obj);
     }
-    properties.clear();
+    properties_.clear();
 }
 
 int SrsJsonObject::count()
 {
-    return (int)properties.size();
+    return (int)properties_.size();
 }
 
 string SrsJsonObject::key_at(int index)
 {
     srs_assert(index < count());
-    SrsJsonObjectPropertyType& elem = properties[index];
+    SrsJsonObjectPropertyType &elem = properties_[index];
     return elem.first;
 }
 
-SrsJsonAny* SrsJsonObject::value_at(int index)
+SrsJsonAny *SrsJsonObject::value_at(int index)
 {
     srs_assert(index < count());
-    SrsJsonObjectPropertyType& elem = properties[index];
+    SrsJsonObjectPropertyType &elem = properties_[index];
     return elem.second;
 }
 
 string SrsJsonObject::dumps()
 {
     stringstream ss;
-    
+
     ss << SRS_JOBJECT_START;
-    
-    for (int i = 0; i < (int)properties.size(); i++) {
+
+    for (int i = 0; i < (int)properties_.size(); i++) {
         std::string name = this->key_at(i);
-        SrsJsonAny* any = this->value_at(i);
-        
+        SrsJsonAny *any = this->value_at(i);
+
         ss << SRS_JFIELD_NAME(name) << any->dumps();
-        if (i < (int)properties.size() - 1) {
+        if (i < (int)properties_.size() - 1) {
             ss << SRS_JFIELD_CONT;
         }
     }
-    
+
     ss << SRS_JOBJECT_END;
-    
+
     return ss.str();
 }
 
-SrsAmf0Any* SrsJsonObject::to_amf0()
+SrsAmf0Any *SrsJsonObject::to_amf0()
 {
-    SrsAmf0Object* obj = SrsAmf0Any::object();
-    
-    for (int i = 0; i < (int)properties.size(); i++) {
+    SrsAmf0Object *obj = SrsAmf0Any::object();
+
+    for (int i = 0; i < (int)properties_.size(); i++) {
         std::string name = this->key_at(i);
-        SrsJsonAny* any = this->value_at(i);
-        
+        SrsJsonAny *any = this->value_at(i);
+
         obj->set(name, any->to_amf0());
     }
-    
+
     return obj;
 }
 
-void SrsJsonObject::set(string key, SrsJsonAny* value)
+SrsJsonObject *SrsJsonObject::set(string key, SrsJsonAny *value)
 {
     if (!value) {
         srs_warn("add a NULL propertity %s", key.c_str());
-        return;
+        return this;
     }
-    
+
     std::vector<SrsJsonObjectPropertyType>::iterator it;
-    
-    for (it = properties.begin(); it != properties.end(); ++it) {
-        SrsJsonObjectPropertyType& elem = *it;
+
+    for (it = properties_.begin(); it != properties_.end(); ++it) {
+        SrsJsonObjectPropertyType &elem = *it;
         std::string name = elem.first;
-        SrsJsonAny* any = elem.second;
-        
+        SrsJsonAny *any = elem.second;
+
         if (key == name) {
             srs_freep(any);
-            properties.erase(it);
+            it = properties_.erase(it);
             break;
         }
     }
-    
-    properties.push_back(std::make_pair(key, value));
+
+    properties_.push_back(std::make_pair(key, value));
+    return this;
 }
 
-SrsJsonAny* SrsJsonObject::get_property(string name)
+SrsJsonAny *SrsJsonObject::get_property(string name)
 {
     std::vector<SrsJsonObjectPropertyType>::iterator it;
-    
-    for (it = properties.begin(); it != properties.end(); ++it) {
-        SrsJsonObjectPropertyType& elem = *it;
+
+    for (it = properties_.begin(); it != properties_.end(); ++it) {
+        SrsJsonObjectPropertyType &elem = *it;
         std::string key = elem.first;
-        SrsJsonAny* any = elem.second;
+        SrsJsonAny *any = elem.second;
         if (key == name) {
             return any;
         }
     }
-    
+
     return NULL;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_string(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_string(string name)
 {
-    SrsJsonAny* prop = get_property(name);
-    
+    SrsJsonAny *prop = get_property(name);
+
     if (!prop) {
         return NULL;
     }
-    
+
     if (!prop->is_string()) {
         return NULL;
     }
-    
+
     return prop;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_integer(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_integer(string name)
 {
-    SrsJsonAny* prop = get_property(name);
-    
+    SrsJsonAny *prop = get_property(name);
+
     if (!prop) {
         return NULL;
     }
-    
+
     if (!prop->is_integer()) {
         return NULL;
     }
-    
+
     return prop;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_number(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_number(string name)
 {
-    SrsJsonAny* prop = get_property(name);
-    
+    SrsJsonAny *prop = get_property(name);
+
     if (!prop) {
         return NULL;
     }
-    
+
     if (!prop->is_number()) {
         return NULL;
     }
-    
+
     return prop;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_boolean(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_boolean(string name)
 {
-    SrsJsonAny* prop = get_property(name);
-    
+    SrsJsonAny *prop = get_property(name);
+
     if (!prop) {
         return NULL;
     }
-    
+
     if (!prop->is_boolean()) {
         return NULL;
     }
-    
+
     return prop;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_object(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_object(string name)
 {
-    SrsJsonAny* prop = get_property(name);
+    SrsJsonAny *prop = get_property(name);
 
     if (!prop) {
         return NULL;
@@ -677,9 +2015,9 @@ SrsJsonAny* SrsJsonObject::ensure_property_object(string name)
     return prop;
 }
 
-SrsJsonAny* SrsJsonObject::ensure_property_array(string name)
+SrsJsonAny *SrsJsonObject::ensure_property_array(string name)
 {
-    SrsJsonAny* prop = get_property(name);
+    SrsJsonAny *prop = get_property(name);
 
     if (!prop) {
         return NULL;
@@ -694,475 +2032,77 @@ SrsJsonAny* SrsJsonObject::ensure_property_array(string name)
 
 SrsJsonArray::SrsJsonArray()
 {
-    marker = SRS_JSON_Array;
+    marker_ = SRS_JSON_Array;
 }
 
 SrsJsonArray::~SrsJsonArray()
 {
-    std::vector<SrsJsonAny*>::iterator it;
-    for (it = properties.begin(); it != properties.end(); ++it) {
-        SrsJsonAny* item = *it;
+    std::vector<SrsJsonAny *>::iterator it;
+    for (it = properties_.begin(); it != properties_.end(); ++it) {
+        SrsJsonAny *item = *it;
         srs_freep(item);
     }
-    properties.clear();
+    properties_.clear();
 }
 
 int SrsJsonArray::count()
 {
-    return (int)properties.size();
+    return (int)properties_.size();
 }
 
-SrsJsonAny* SrsJsonArray::at(int index)
+SrsJsonAny *SrsJsonArray::at(int index)
 {
     srs_assert(index < count());
-    SrsJsonAny* elem = properties[index];
+    SrsJsonAny *elem = properties_[index];
     return elem;
 }
 
-void SrsJsonArray::add(SrsJsonAny* value)
+SrsJsonArray *SrsJsonArray::add(SrsJsonAny *value)
 {
-    properties.push_back(value);
+    properties_.push_back(value);
+    return this;
 }
 
-void SrsJsonArray::append(SrsJsonAny* value)
+SrsJsonArray *SrsJsonArray::append(SrsJsonAny *value)
 {
     add(value);
+    return this;
 }
 
 string SrsJsonArray::dumps()
 {
     stringstream ss;
-    
+
     ss << SRS_JARRAY_START;
-    
-    for (int i = 0; i < (int)properties.size(); i++) {
-        SrsJsonAny* any = properties[i];
-        
+
+    for (int i = 0; i < (int)properties_.size(); i++) {
+        SrsJsonAny *any = properties_[i];
+
         ss << any->dumps();
-        
-        if (i < (int)properties.size() - 1) {
+
+        if (i < (int)properties_.size() - 1) {
             ss << SRS_JFIELD_CONT;
         }
     }
-    
+
     ss << SRS_JARRAY_END;
-    
+
     return ss.str();
 }
 
-SrsAmf0Any* SrsJsonArray::to_amf0()
+SrsAmf0Any *SrsJsonArray::to_amf0()
 {
-    SrsAmf0StrictArray* arr = SrsAmf0Any::strict_array();
-    
-    for (int i = 0; i < (int)properties.size(); i++) {
-        SrsJsonAny* any = properties[i];
-        
+    SrsAmf0StrictArray *arr = SrsAmf0Any::strict_array();
+
+    for (int i = 0; i < (int)properties_.size(); i++) {
+        SrsJsonAny *any = properties_[i];
+
         arr->append(any->to_amf0());
     }
-    
+
     return arr;
 }
 
-#ifdef SRS_JSON_USE_NXJSON
-
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
-/*
- * Copyright (c) 2013 Yaroslav Stavnichiy <yarosla@gmail.com>
- *
- * This file is part of NXJSON.
- *
- * NXJSON is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License
- * as published by the Free Software Foundation, either version 3
- * of the License, or (at your option) any later version.
- *
- * NXJSON is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with NXJSON. If not, see <http://www.gnu.org/licenses/>.
- */
-
-// this file can be #included in your code
-#ifndef NXJSON_C
-#define NXJSON_C
-
-#ifdef  __cplusplus
-extern "C" {
-#endif
-
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-
-//#include "nxjson.h"
-
-// redefine NX_JSON_CALLOC & NX_JSON_FREE to use custom allocator
-#ifndef NX_JSON_CALLOC
-#define NX_JSON_CALLOC() calloc(1, sizeof(nx_json))
-#define NX_JSON_FREE(json) free((void*)(json))
-#endif
-
-// redefine NX_JSON_REPORT_ERROR to use custom error reporting
-#ifndef NX_JSON_REPORT_ERROR
-#define NX_JSON_REPORT_ERROR(msg, p) srs_warn("NXJSON PARSE ERROR (%d): " msg " at %s", __LINE__, p)
-#endif
-
-#define IS_WHITESPACE(c) ((unsigned char)(c)<=(unsigned char)' ')
-
-static const nx_json dummy={ NX_JSON_NULL };
-
-static nx_json* create_json(nx_json_type type, const char* key, nx_json* parent) {
-  nx_json* js=(nx_json*)NX_JSON_CALLOC();
-  memset(js, 0, sizeof(nx_json));
-  assert(js);
-  js->type=type;
-  js->key=key;
-  if (!parent->last_child) {
-    parent->child=parent->last_child=js;
-  }
-  else {
-    parent->last_child->next=js;
-    parent->last_child=js;
-  }
-  parent->length++;
-  return js;
-}
-
-void nx_json_free(const nx_json* js) {
-  nx_json* p=js->child;
-  nx_json* p1;
-  while (p) {
-    p1=p->next;
-    nx_json_free(p);
-    p=p1;
-  }
-  NX_JSON_FREE(js);
-}
-
-static int unicode_to_utf8(unsigned int codepoint, char* p, char** endp) {
-  // code from http://stackoverflow.com/a/4609989/697313
-  if (codepoint<0x80) *p++=codepoint;
-  else if (codepoint<0x800) *p++=192+codepoint/64, *p++=128+codepoint%64;
-  else if (codepoint-0xd800u<0x800) return 0; // surrogate must have been treated earlier
-  else if (codepoint<0x10000) *p++=224+codepoint/4096, *p++=128+codepoint/64%64, *p++=128+codepoint%64;
-  else if (codepoint<0x110000) *p++=240+codepoint/262144, *p++=128+codepoint/4096%64, *p++=128+codepoint/64%64, *p++=128+codepoint%64;
-  else return 0; // error
-  *endp=p;
-  return 1;
-}
-
-nx_json_unicode_encoder nx_json_unicode_to_utf8=unicode_to_utf8;
-
-static inline int hex_val(char c) {
-  if (c>='0' && c<='9') return c-'0';
-  if (c>='a' && c<='f') return c-'a'+10;
-  if (c>='A' && c<='F') return c-'A'+10;
-  return -1;
-}
-
-static char* unescape_string(char* s, char** end, nx_json_unicode_encoder encoder) {
-  char* p=s;
-  char* d=s;
-  char c;
-  while ((c=*p++)) {
-    if (c=='"') {
-      *d='\0';
-      *end=p;
-      return s;
-    }
-    else if (c=='\\') {
-      switch (*p) {
-        case '\\':
-        case '/':
-        case '"':
-          *d++=*p++;
-          break;
-        case 'b':
-          *d++='\b'; p++;
-          break;
-        case 'f':
-          *d++='\f'; p++;
-          break;
-        case 'n':
-          *d++='\n'; p++;
-          break;
-        case 'r':
-          *d++='\r'; p++;
-          break;
-        case 't':
-          *d++='\t'; p++;
-          break;
-        case 'u': { // unicode
-          if (!encoder) {
-            // leave untouched
-            *d++=c;
-            break;
-          }
-          char* ps=p-1;
-          int h1, h2, h3, h4;
-          if ((h1=hex_val(p[1]))<0 || (h2=hex_val(p[2]))<0 || (h3=hex_val(p[3]))<0 || (h4=hex_val(p[4]))<0) {
-            NX_JSON_REPORT_ERROR("invalid unicode escape", p-1);
-            return 0;
-          }
-          unsigned int codepoint=h1<<12|h2<<8|h3<<4|h4;
-          if ((codepoint & 0xfc00)==0xd800) { // high surrogate; need one more unicode to succeed
-            p+=6;
-            if (p[-1]!='\\' || *p!='u' || (h1=hex_val(p[1]))<0 || (h2=hex_val(p[2]))<0 || (h3=hex_val(p[3]))<0 || (h4=hex_val(p[4]))<0) {
-              NX_JSON_REPORT_ERROR("invalid unicode surrogate", ps);
-              return 0;
-            }
-            unsigned int codepoint2=h1<<12|h2<<8|h3<<4|h4;
-            if ((codepoint2 & 0xfc00)!=0xdc00) {
-              NX_JSON_REPORT_ERROR("invalid unicode surrogate", ps);
-              return 0;
-            }
-            codepoint=0x10000+((codepoint-0xd800)<<10)+(codepoint2-0xdc00);
-          }
-          if (!encoder(codepoint, d, &d)) {
-            NX_JSON_REPORT_ERROR("invalid codepoint", ps);
-            return 0;
-          }
-          p+=5;
-          break;
-      }
-        default: {
-          // leave untouched
-          *d++=c;
-          break;
-        }
-      }
-    }
-    else {
-      *d++=c;
-    }
-  }
-  NX_JSON_REPORT_ERROR("no closing quote for string", s);
-  return 0;
-}
-
-static char* skip_block_comment(char* p) {
-  // assume p[-2]=='/' && p[-1]=='*'
-  char* ps=p-2;
-  if (!*p) {
-    NX_JSON_REPORT_ERROR("endless comment", ps);
-    return 0;
-  }
-  REPEAT:
-  p=strchr(p+1, '/');
-  if (!p) {
-    NX_JSON_REPORT_ERROR("endless comment", ps);
-    return 0;
-  }
-  if (p[-1]!='*') goto REPEAT;
-  return p+1;
-}
-
-static char* parse_key(const char** key, char* p, nx_json_unicode_encoder encoder) {
-  // on '}' return with *p=='}'
-  char c;
-  while ((c=*p++)) {
-    if (c=='"') {
-      *key=unescape_string(p, &p, encoder);
-      if (!*key) return 0; // propagate error
-      while (*p && IS_WHITESPACE(*p)) p++;
-      if (*p==':') return p+1;
-      NX_JSON_REPORT_ERROR("unexpected chars", p);
-      return 0;
-    }
-    else if (IS_WHITESPACE(c) || c==',') {
-      // continue
-    }
-    else if (c=='}') {
-      return p-1;
-    }
-    else if (c=='/') {
-      if (*p=='/') { // line comment
-        char* ps=p-1;
-        p=strchr(p+1, '\n');
-        if (!p) {
-          NX_JSON_REPORT_ERROR("endless comment", ps);
-          return 0; // error
-        }
-        p++;
-      }
-      else if (*p=='*') { // block comment
-        p=skip_block_comment(p+1);
-        if (!p) return 0;
-      }
-      else {
-        NX_JSON_REPORT_ERROR("unexpected chars", p-1);
-        return 0; // error
-      }
-    }
-    else {
-      NX_JSON_REPORT_ERROR("unexpected chars", p-1);
-      return 0; // error
-    }
-  }
-  NX_JSON_REPORT_ERROR("unexpected chars", p-1);
-  return 0; // error
-}
-
-static char* parse_value(nx_json* parent, const char* key, char* p, nx_json_unicode_encoder encoder) {
-  nx_json* js;
-  while (1) {
-    switch (*p) {
-      case '\0':
-        NX_JSON_REPORT_ERROR("unexpected end of text", p);
-        return 0; // error
-      case ' ': case '\t': case '\n': case '\r':
-      case ',':
-        // skip
-        p++;
-        break;
-      case '{':
-        js=create_json(NX_JSON_OBJECT, key, parent);
-        p++;
-        while (1) {
-          const char* new_key;
-          p=parse_key(&new_key, p, encoder);
-          if (!p) return 0; // error
-          if (*p=='}') return p+1; // end of object
-          p=parse_value(js, new_key, p, encoder);
-          if (!p) return 0; // error
-        }
-      case '[':
-        js=create_json(NX_JSON_ARRAY, key, parent);
-        p++;
-        while (1) {
-          p=parse_value(js, 0, p, encoder);
-          if (!p) return 0; // error
-          if (*p==']') return p+1; // end of array
-        }
-      case ']':
-        return p;
-      case '"':
-        p++;
-        js=create_json(NX_JSON_STRING, key, parent);
-        js->text_value=unescape_string(p, &p, encoder);
-        if (!js->text_value) return 0; // propagate error
-        return p;
-      case '-': case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
-        {
-          js=create_json(NX_JSON_INTEGER, key, parent);
-          char* pe;
-          js->int_value=strtol(p, &pe, 0);
-          if (pe==p) {
-            NX_JSON_REPORT_ERROR("invalid number", p);
-            return 0; // error
-          }
-          if (*pe=='.' || *pe=='e' || *pe=='E') { // double value
-            js->type=NX_JSON_DOUBLE;
-            js->dbl_value=strtod(p, &pe);
-            if (pe==p) {
-              NX_JSON_REPORT_ERROR("invalid number", p);
-              return 0; // error
-            }
-          }
-          else {
-            js->dbl_value=js->int_value;
-          }
-          return pe;
-        }
-      case 't':
-        if (!strncmp(p, "true", 4)) {
-          js=create_json(NX_JSON_BOOL, key, parent);
-          js->int_value=1;
-          return p+4;
-        }
-        NX_JSON_REPORT_ERROR("unexpected chars", p);
-        return 0; // error
-      case 'f':
-        if (!strncmp(p, "false", 5)) {
-          js=create_json(NX_JSON_BOOL, key, parent);
-          js->int_value=0;
-          return p+5;
-        }
-        NX_JSON_REPORT_ERROR("unexpected chars", p);
-        return 0; // error
-      case 'n':
-        if (!strncmp(p, "null", 4)) {
-          create_json(NX_JSON_NULL, key, parent);
-          return p+4;
-        }
-        NX_JSON_REPORT_ERROR("unexpected chars", p);
-        return 0; // error
-      case '/': // comment
-        if (p[1]=='/') { // line comment
-          char* ps=p;
-          p=strchr(p+2, '\n');
-          if (!p) {
-            NX_JSON_REPORT_ERROR("endless comment", ps);
-            return 0; // error
-          }
-          p++;
-        }
-        else if (p[1]=='*') { // block comment
-          p=skip_block_comment(p+2);
-          if (!p) return 0;
-        }
-        else {
-          NX_JSON_REPORT_ERROR("unexpected chars", p);
-          return 0; // error
-        }
-        break;
-      default:
-        NX_JSON_REPORT_ERROR("unexpected chars", p);
-        return 0; // error
-    }
-  }
-}
-
-const nx_json* nx_json_parse_utf8(char* text) {
-  return nx_json_parse(text, unicode_to_utf8);
-}
-
-const nx_json* nx_json_parse(char* text, nx_json_unicode_encoder encoder) {
-  nx_json js;
-  memset(&js, 0, sizeof(nx_json));
-  if (!parse_value(&js, 0, text, encoder)) {
-    if (js.child) nx_json_free(js.child);
-    return 0;
-  }
-  return js.child;
-}
-
-const nx_json* nx_json_get(const nx_json* json, const char* key) {
-  if (!json || !key) return &dummy; // never return null
-  nx_json* js;
-  for (js=json->child; js; js=js->next) {
-    if (js->key && !strcmp(js->key, key)) return js;
-  }
-  return &dummy; // never return null
-}
-
-const nx_json* nx_json_item(const nx_json* json, int idx) {
-  if (!json) return &dummy; // never return null
-  nx_json* js;
-  for (js=json->child; js; js=js->next) {
-    if (!idx--) return js;
-  }
-  return &dummy; // never return null
-}
-
-
-#ifdef  __cplusplus
-}
-#endif
-
-#endif  /* NXJSON_C */
-
-////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////
-
-#endif
-
-

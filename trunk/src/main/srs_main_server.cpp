@@ -1,28 +1,12 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #include <srs_core.hpp>
 
+// LCOV_EXCL_START
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -30,95 +14,290 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <sstream>
 using namespace std;
 
-#ifdef SRS_AUTO_GPERF_MP
-    #include <gperftools/heap-profiler.h>
+#ifdef SRS_GPERF_MP
+#include <gperftools/heap-profiler.h>
 #endif
-#ifdef SRS_AUTO_GPERF_CP
-    #include <gperftools/profiler.h>
+#ifdef SRS_GPERF_CP
+#include <gperftools/profiler.h>
 #endif
 
+#ifdef SRS_GPERF
+#include <gperftools/malloc_extension.h>
+#endif
+
+#ifdef SRS_SANITIZER_LOG
+#include <sanitizer/asan_interface.h>
+#endif
+
+#include <unistd.h>
 using namespace std;
 
-#include <srs_kernel_error.hpp>
-#include <srs_app_server.hpp>
+#include <srs_app_circuit_breaker.hpp>
 #include <srs_app_config.hpp>
+#include <srs_app_factory.hpp>
 #include <srs_app_log.hpp>
-#include <srs_kernel_utility.hpp>
-#include <srs_core_performance.hpp>
+#include <srs_app_rtc_codec.hpp>
+#include <srs_app_rtc_conn.hpp>
+#include <srs_app_server.hpp>
+#include <srs_app_srt_server.hpp>
 #include <srs_app_utility.hpp>
+#include <srs_core_autofree.hpp>
+#include <srs_core_performance.hpp>
+#include <srs_kernel_error.hpp>
+#include <srs_kernel_file.hpp>
+#include <srs_kernel_kbps.hpp>
+#include <srs_kernel_utility.hpp>
+#include <srs_protocol_srt.hpp>
 
 // pre-declare
-int run();
-int run_master();
+srs_error_t run_directly_or_daemon();
+srs_error_t run_srs_server();
+void show_macro_features();
 
-// for the main objects(server, config, log, context),
-// never subscribe handler in constructor,
-// instead, subscribe handler in initialize method.
-// kernel module.
-ISrsLog* _srs_log = new SrsFastLog();
-ISrsThreadContext* _srs_context = new SrsThreadContext();
-// app module.
-SrsConfig* _srs_config = new SrsConfig();
-SrsServer* _srs_server = new SrsServer();
-// version of srs, which can grep keyword "XCORE"
-extern const char* _srs_version;
+// @global log and context.
+ISrsLog *_srs_log = NULL;
+// It SHOULD be thread-safe, because it use thread-local thread private data.
+ISrsContext *_srs_context = NULL;
+// @global config object for app module.
+SrsConfig *_srs_config = NULL;
+
+// @global kernel factory.
+ISrsAppFactory *_srs_app_factory = new SrsAppFactory();
+ISrsKernelFactory *_srs_kernel_factory = _srs_app_factory;
+
+#ifdef SRS_FFMPEG_FIT
+// Register FFmpeg log callback funciton.
+SrsFFmpegLogHelper _srs_ffmpeg_log_helper;
+#endif
+
+// @global version of srs, which can grep keyword "XCORE"
+extern const char *_srs_version;
+
+// Whether setup config by environment variables, see https://github.com/ossrs/srs/issues/2277
+bool _srs_config_by_env = false;
+
+// The binary name of SRS.
+const char *_srs_binary = NULL;
+
+// @global Other variables.
+bool _srs_in_docker = false;
+
+#ifdef SRS_SANITIZER_LOG
+extern void asan_report_callback(const char *str);
+#endif
 
 /**
-* show the features by macro, the actual macro values.
-*/
+ * main entrance.
+ */
+srs_error_t do_main(int argc, char **argv, char **envp)
+{
+    srs_error_t err = srs_success;
+
+    // TODO: Might fail if change working directory.
+    _srs_binary = argv[0];
+
+    // For sanitizer on macOS, to avoid the warning on startup.
+#if defined(SRS_OSX) && defined(SRS_SANITIZER)
+    if (!getenv("MallocNanoZone")) {
+        fprintf(stderr, "Asan: Please setup the env MallocNanoZone=0 to disable the warning, see https://stackoverflow.com/a/70209891/17679565\n");
+    }
+#endif
+
+    // Root global objects, should be created before any other global objects.
+    _srs_log = new SrsFileLog();
+    _srs_context = new SrsThreadContext();
+    _srs_config = new SrsConfig();
+
+    // For background context id.
+    _srs_context->set_id(_srs_context->generate_id());
+
+    // TODO: support both little and big endian.
+    srs_assert(srs_is_little_endian());
+
+    // for gperf gmp or gcp,
+    // should never enable it when not enabled for performance issue.
+#ifdef SRS_GPERF_MP
+    HeapProfilerStart("gperf.srs.gmp");
+#endif
+#ifdef SRS_GPERF_CP
+    ProfilerStart("gperf.srs.gcp");
+#endif
+
+    // never use gmp to check memory leak.
+#ifdef SRS_GPERF_MP
+#warning "gmp is not used for memory leak, please use gmc instead."
+#endif
+
+    // never use srs log(srs_trace, srs_error, etc) before config parse the option,
+    // which will load the log config and apply it.
+    if ((err = _srs_config->parse_options(argc, argv)) != srs_success) {
+        return srs_error_wrap(err, "config parse options");
+    }
+
+    // change the work dir and set cwd.
+    int r0 = 0;
+    string cwd = _srs_config->get_work_dir();
+    if (!cwd.empty() && cwd != "./" && (r0 = chdir(cwd.c_str())) == -1) {
+        return srs_error_new(-1, "chdir to %s, r0=%d", cwd.c_str(), r0);
+    }
+    if ((err = _srs_config->initialize_cwd()) != srs_success) {
+        return srs_error_wrap(err, "config cwd");
+    }
+
+    // config parsed, initialize log.
+    if ((err = _srs_log->initialize()) != srs_success) {
+        return srs_error_wrap(err, "log initialize");
+    }
+
+    // Detect whether set SRS config by envrionment variables.
+    for (char **pp = envp; *pp; pp++) {
+        char *p = *pp;
+        if (p[0] == 'S' && p[1] == 'R' && p[2] == 'S' && p[3] == '_') {
+            _srs_config_by_env = true;
+            break;
+        }
+    }
+
+    // config already applied to log.
+    srs_trace("%s, %s", RTMP_SIG_SRS_SERVER, RTMP_SIG_SRS_LICENSE);
+    srs_trace("authors: %sand %s", RTMP_SIG_SRS_AUTHORS, SRS_CONSTRIBUTORS);
+    srs_trace("cwd=%s, work_dir=%s, build: %s, configure: %s, uname: %s, osx: %d, env: %d, pkg: %s",
+              _srs_config->cwd().c_str(), cwd.c_str(), SRS_BUILD_DATE, SRS_USER_CONFIGURE, SRS_UNAME, SRS_OSX_BOOL,
+              _srs_config_by_env, SRS_PACKAGER);
+    srs_trace("configure detail: " SRS_CONFIGURE);
+#ifdef SRS_EMBEDED_TOOL_CHAIN
+    srs_trace("crossbuild tool chain: " SRS_EMBEDED_TOOL_CHAIN);
+#endif
+
+    // for memory check or detect.
+    if (true) {
+        stringstream ss;
+
+#ifdef SRS_PERF_GLIBC_MEMORY_CHECK
+        // ensure glibc write error to stderr.
+        string lfsov = srs_getenv("LIBC_FATAL_STDERR_");
+        setenv("LIBC_FATAL_STDERR_", "1", 1);
+        string lfsnv = srs_getenv("LIBC_FATAL_STDERR_");
+        //
+        // ensure glibc to do alloc check.
+        string mcov = srs_getenv("MALLOC_CHECK_");
+        setenv("MALLOC_CHECK_", "1", 1);
+        string mcnv = srs_getenv("MALLOC_CHECK_");
+        ss << "glic mem-check env MALLOC_CHECK_ " << mcov << "=>" << mcnv << ", LIBC_FATAL_STDERR_ " << lfsov << "=>" << lfsnv << ".";
+#endif
+
+#ifdef SRS_GPERF_MC
+        string hcov = srs_getenv("HEAPCHECK");
+        if (hcov.empty()) {
+            string cpath = _srs_config->config();
+            srs_warn("gmc HEAPCHECK is required, for example: env HEAPCHECK=normal ./objs/srs -c %s", cpath.c_str());
+        } else {
+            ss << "gmc env HEAPCHECK=" << hcov << ".";
+        }
+#endif
+
+#ifdef SRS_GPERF_MD
+        char *TCMALLOC_PAGE_FENCE = getenv("TCMALLOC_PAGE_FENCE");
+        if (!TCMALLOC_PAGE_FENCE || strcmp(TCMALLOC_PAGE_FENCE, "1")) {
+            srs_warn("gmd enabled without env TCMALLOC_PAGE_FENCE=1");
+        } else {
+            ss << "gmd env TCMALLOC_PAGE_FENCE=" << TCMALLOC_PAGE_FENCE << ".";
+        }
+#endif
+
+        string sss = ss.str();
+        if (!sss.empty()) {
+            srs_trace(sss.c_str());
+        }
+    }
+
+    // we check the config when the log initialized.
+    if ((err = _srs_config->check_config()) != srs_success) {
+        return srs_error_wrap(err, "check config");
+    }
+
+    // features
+    show_macro_features();
+
+#ifdef SRS_GPERF
+    // For tcmalloc, use slower release rate.
+    if (true) {
+        double trr = _srs_config->tcmalloc_release_rate();
+        double otrr = MallocExtension::instance()->GetMemoryReleaseRate();
+        MallocExtension::instance()->SetMemoryReleaseRate(trr);
+        srs_trace("tcmalloc: set release-rate %.2f=>%.2f", otrr, trr);
+    }
+#endif
+
+#ifdef SRS_SANITIZER_LOG
+    __asan_set_error_report_callback(asan_report_callback);
+#endif
+
+    if ((err = run_directly_or_daemon()) != srs_success) {
+        return srs_error_wrap(err, "run");
+    }
+
+    return err;
+}
+
+int main(int argc, char **argv, char **envp)
+{
+#ifdef SRS_SANITIZER
+    // Setup the primordial stack for st. Use the current variable address as the stack top.
+    // This is not very accurate but sufficient.
+    void *p = NULL;
+    srs_set_primordial_stack(&p);
+#endif
+
+    srs_error_t err = do_main(argc, argv, envp);
+
+    if (err != srs_success) {
+        srs_error("Failed, %s", srs_error_desc(err).c_str());
+    }
+
+    int ret = srs_error_code(err);
+    srs_freep(err);
+    return ret;
+}
+
+/**
+ * show the features by macro, the actual macro values.
+ */
 void show_macro_features()
 {
     if (true) {
         stringstream ss;
-        
+
         ss << "features";
-        
+
         // rch(rtmp complex handshake)
-        ss << ", rch:" << srs_bool2switch(SRS_AUTO_SSL_BOOL);
-        ss << ", hls:" << srs_bool2switch(SRS_AUTO_HLS_BOOL);
-        ss << ", hds:" << srs_bool2switch(SRS_AUTO_HDS_BOOL);
+        ss << ", rch:" << srs_strconv_format_bool(true);
+        ss << ", dash:" << "on";
+        ss << ", hls:" << srs_strconv_format_bool(true);
+        ss << ", hds:" << srs_strconv_format_bool(SRS_HDS_BOOL);
+        ss << ", srt:" << srs_strconv_format_bool(true);
         // hc(http callback)
-        ss << ", hc:" << srs_bool2switch(SRS_AUTO_HTTP_CALLBACK_BOOL);
+        ss << ", hc:" << srs_strconv_format_bool(true);
         // ha(http api)
-        ss << ", ha:" << srs_bool2switch(SRS_AUTO_HTTP_API_BOOL);
+        ss << ", ha:" << srs_strconv_format_bool(true);
         // hs(http server)
-        ss << ", hs:" << srs_bool2switch(SRS_AUTO_HTTP_SERVER_BOOL);
+        ss << ", hs:" << srs_strconv_format_bool(true);
         // hp(http parser)
-        ss << ", hp:" << srs_bool2switch(SRS_AUTO_HTTP_CORE_BOOL);
-        ss << ", dvr:" << srs_bool2switch(SRS_AUTO_DVR_BOOL);
+        ss << ", hp:" << srs_strconv_format_bool(true);
+        ss << ", dvr:" << srs_strconv_format_bool(true);
         // trans(transcode)
-        ss << ", trans:" << srs_bool2switch(SRS_AUTO_TRANSCODE_BOOL);
+        ss << ", trans:" << srs_strconv_format_bool(true);
         // inge(ingest)
-        ss << ", inge:" << srs_bool2switch(SRS_AUTO_INGEST_BOOL);
-        ss << ", kafka:" << srs_bool2switch(SRS_AUTO_KAFKA_BOOL);
-        ss << ", stat:" << srs_bool2switch(SRS_AUTO_STAT_BOOL);
-        ss << ", nginx:" << srs_bool2switch(SRS_AUTO_NGINX_BOOL);
-        // ff(ffmpeg)
-        ss << ", ff:" << srs_bool2switch(SRS_AUTO_FFMPEG_TOOL_BOOL);
+        ss << ", inge:" << srs_strconv_format_bool(true);
+        ss << ", stat:" << srs_strconv_format_bool(true);
         // sc(stream-caster)
-        ss << ", sc:" << srs_bool2switch(SRS_AUTO_STREAM_CASTER_BOOL);
-        srs_trace(ss.str().c_str());
+        ss << ", sc:" << srs_strconv_format_bool(true);
+        srs_trace("%s", ss.str().c_str());
     }
-    
+
     if (true) {
         stringstream ss;
-        ss << "SRS on ";
-#ifdef SRS_OSX
-        ss << "OSX";
-#endif
-#ifdef SRS_PI
-        ss << "RespberryPi";
-#endif
-#ifdef SRS_CUBIE
-        ss << "CubieBoard";
-#endif
-#ifdef SRS_ARM_UBUNTU12
-        ss << "ARM(build on ubuntu)";
-#endif
-#ifdef SRS_MIPS_UBUNTU12
-        ss << "MIPS(build on ubuntu)";
-#endif
-        
+        ss << "SRS on";
 #if defined(__amd64__)
         ss << " amd64";
 #endif
@@ -129,26 +308,28 @@ void show_macro_features()
         ss << " i386";
 #endif
 #if defined(__arm__)
-        ss << "arm";
+        ss << " arm";
 #endif
-        
-#ifndef SRS_OSX
-        ss << ", glibc" << (int)__GLIBC__ << "." <<  (int)__GLIBC_MINOR__;
+#if defined(__aarch64__)
+        ss << " aarch64";
 #endif
-        
+#if defined(SRS_CROSSBUILD)
+        ss << "(crossbuild)";
+#endif
+
         ss << ", conf:" << _srs_config->config() << ", limit:" << _srs_config->get_max_connections()
-            << ", writev:" << sysconf(_SC_IOV_MAX) << ", encoding:" << (srs_is_little_endian()? "little-endian":"big-endian")
-            << ", HZ:" << (int)sysconf(_SC_CLK_TCK);
-        
-        srs_trace(ss.str().c_str());
+           << ", writev:" << sysconf(_SC_IOV_MAX) << ", encoding:" << (srs_is_little_endian() ? "little-endian" : "big-endian")
+           << ", HZ:" << (int)sysconf(_SC_CLK_TCK);
+
+        srs_trace("%s", ss.str().c_str());
     }
-    
+
     if (true) {
         stringstream ss;
-        
+
         // mw(merged-write)
-        ss << "mw sleep:" << SRS_PERF_MW_SLEEP << "ms";
-        
+        ss << "mw sleep:" << srsu2msi(SRS_PERF_MW_SLEEP) << "ms";
+
         // mr(merged-read)
         ss << ". mr ";
 #ifdef SRS_PERF_MERGED_READ
@@ -156,19 +337,18 @@ void show_macro_features()
 #else
         ss << "enabled:off";
 #endif
-        ss << ", default:" << SRS_PERF_MR_ENABLED << ", sleep:" << SRS_PERF_MR_SLEEP << "ms";
-        ss << ", @see " << RTMP_SIG_SRS_ISSUES(241);
-        
-        srs_trace(ss.str().c_str());
+        ss << ", default:" << SRS_PERF_MR_ENABLED << ", sleep:" << srsu2msi(SRS_PERF_MR_SLEEP) << "ms";
+
+        srs_trace("%s", ss.str().c_str());
     }
-    
+
     if (true) {
         stringstream ss;
-        
+
         // gc(gop-cache)
-        ss << "gc:" << srs_bool2switch(SRS_PERF_GOP_CACHE);
+        ss << "gc:" << srs_strconv_format_bool(SRS_PERF_GOP_CACHE);
         // pq(play-queue)
-        ss << ", pq:" << SRS_PERF_PLAY_QUEUE << "s";
+        ss << ", pq:" << srsu2msi(SRS_PERF_PLAY_QUEUE) << "ms";
         // cscc(chunk stream cache cid)
         ss << ", cscc:[0," << SRS_PERF_CHUNK_STREAM_CACHE << ")";
         // csa(complex send algorithm)
@@ -178,7 +358,7 @@ void show_macro_features()
 #else
         ss << "on";
 #endif
-        
+
         // tn(TCP_NODELAY)
         ss << ", tn:";
 #ifdef SRS_PERF_TCP_NODELAY
@@ -186,7 +366,7 @@ void show_macro_features()
 #else
         ss << "off";
 #endif
-      
+
         // ss(SO_SENDBUF)
         ss << ", ss:";
 #ifdef SRS_PERF_SO_SNDBUF_SIZE
@@ -194,225 +374,114 @@ void show_macro_features()
 #else
         ss << "auto(guess by merged write)";
 #endif
-        
-        srs_trace(ss.str().c_str());
+
+        srs_trace("%s", ss.str().c_str());
     }
-    
+
     // others
     int possible_mr_latency = 0;
 #ifdef SRS_PERF_MERGED_READ
-    possible_mr_latency = SRS_PERF_MR_SLEEP;
+    possible_mr_latency = srsu2msi(SRS_PERF_MR_SLEEP);
 #endif
-    srs_trace("system default latency in ms: mw(0-%d) + mr(0-%d) + play-queue(0-%d)",
-              SRS_PERF_MW_SLEEP, possible_mr_latency, SRS_PERF_PLAY_QUEUE*1000);
-    
-#ifdef SRS_AUTO_MEM_WATCH
-    #warning "srs memory watcher will hurts performance. user should kill by SIGTERM or init.d script."
-    srs_warn("srs memory watcher will hurts performance. user should kill by SIGTERM or init.d script.");
-#endif
-    
-#if defined(SRS_AUTO_STREAM_CASTER)
-    #warning "stream caster is experiment feature."
-    srs_warn("stream caster is experiment feature.");
-#endif
-    
+    srs_trace("system default latency(ms): mw(0-%d) + mr(0-%d) + play-queue(0-%d)",
+              srsu2msi(SRS_PERF_MW_SLEEP), possible_mr_latency, srsu2msi(SRS_PERF_PLAY_QUEUE));
+
 #if VERSION_MAJOR > VERSION_STABLE
-    #warning "current branch is not stable, please use stable branch instead."
-    srs_warn("SRS %s is not stable, please use stable branch %s instead", RTMP_SIG_SRS_VERSION, VERSION_STABLE_BRANCH);
+#warning "Current branch is not stable."
+    srs_warn("%s/%s is not stable", RTMP_SIG_SRS_KEY, RTMP_SIG_SRS_VERSION);
 #endif
-    
+
 #if defined(SRS_PERF_SO_SNDBUF_SIZE) && !defined(SRS_PERF_MW_SO_SNDBUF)
-    #error "SRS_PERF_SO_SNDBUF_SIZE depends on SRS_PERF_MW_SO_SNDBUF"
+#error "SRS_PERF_SO_SNDBUF_SIZE depends on SRS_PERF_MW_SO_SNDBUF"
 #endif
 }
 
-/**
-* main entrance.
-*/
-int main(int argc, char** argv) 
+srs_error_t run_directly_or_daemon()
 {
-    int ret = ERROR_SUCCESS;
+    srs_error_t err = srs_success;
 
-    // TODO: support both little and big endian.
-    srs_assert(srs_is_little_endian());
-
-    // for gperf gmp or gcp, 
-    // should never enable it when not enabled for performance issue.
-#ifdef SRS_AUTO_GPERF_MP
-    HeapProfilerStart("gperf.srs.gmp");
-#endif
-#ifdef SRS_AUTO_GPERF_CP
-    ProfilerStart("gperf.srs.gcp");
-#endif
-
-    // directly compile error when these two macro defines.
-#if defined(SRS_AUTO_GPERF_MC) && defined(SRS_AUTO_GPERF_MP)
-    #error ("option --with-gmc confict with --with-gmp, "
-        "@see: http://google-perftools.googlecode.com/svn/trunk/doc/heap_checker.html\n"
-        "Note that since the heap-checker uses the heap-profiling framework internally, "
-        "it is not possible to run both the heap-checker and heap profiler at the same time");
-#endif
-    
-    // never use gmp to check memory leak.
-#ifdef SRS_AUTO_GPERF_MP
-    #warning "gmp is not used for memory leak, please use gmc instead."
-#endif
-
-    // never use srs log(srs_trace, srs_error, etc) before config parse the option,
-    // which will load the log config and apply it.
-    if ((ret = _srs_config->parse_options(argc, argv)) != ERROR_SUCCESS) {
-        return ret;
+    // Load daemon from config, disable it for docker.
+    // @see https://github.com/ossrs/srs/issues/1594
+    bool run_as_daemon = _srs_config->get_daemon();
+    if (run_as_daemon && _srs_in_docker && _srs_config->disable_daemon_for_docker()) {
+        srs_warn("disable daemon for docker");
+        run_as_daemon = false;
     }
 
-    // change the work dir and set cwd.
-    string cwd = _srs_config->get_work_dir();
-    if (!cwd.empty() && cwd != "./" && (ret = chdir(cwd.c_str())) != ERROR_SUCCESS) {
-        srs_error("change cwd to %s failed. ret=%d", cwd.c_str(), ret);
-        return ret;
-    }
-    if ((ret = _srs_config->initialize_cwd()) != ERROR_SUCCESS) {
-        return ret;
+    // If not daemon, directly run hybrid server.
+    if (!run_as_daemon) {
+        if ((err = run_srs_server()) != srs_success) {
+            return srs_error_wrap(err, "run server");
+        }
+        return srs_success;
     }
 
-    // config parsed, initialize log.
-    if ((ret = _srs_log->initialize()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    // config already applied to log.
-    srs_trace(RTMP_SIG_SRS_SERVER", stable is "RTMP_SIG_SRS_PRIMARY);
-    srs_trace("license: "RTMP_SIG_SRS_LICENSE", "RTMP_SIG_SRS_COPYRIGHT);
-    srs_trace("authors: "RTMP_SIG_SRS_AUTHROS);
-    srs_trace("contributors: "SRS_AUTO_CONSTRIBUTORS);
-    srs_trace("build: %s, configure:%s, uname: %s", SRS_AUTO_BUILD_DATE, SRS_AUTO_USER_CONFIGURE, SRS_AUTO_UNAME);
-    srs_trace("configure detail: "SRS_AUTO_CONFIGURE);
-#ifdef SRS_AUTO_EMBEDED_TOOL_CHAIN
-    srs_trace("crossbuild tool chain: "SRS_AUTO_EMBEDED_TOOL_CHAIN);
-#endif
-    srs_trace("cwd=%s, work_dir=%s", _srs_config->cwd().c_str(), cwd.c_str());
-    
-#ifdef SRS_PERF_GLIBC_MEMORY_CHECK
-    // ensure glibc write error to stderr.
-    setenv("LIBC_FATAL_STDERR_", "1", 1);
-    // ensure glibc to do alloc check.
-    setenv("MALLOC_CHECK_", "1", 1);
-    srs_trace("env MALLOC_CHECK_=1 LIBC_FATAL_STDERR_=1");
-#endif
-    
-#ifdef SRS_AUTO_GPERF_MD
-    char* TCMALLOC_PAGE_FENCE = getenv("TCMALLOC_PAGE_FENCE");
-    if (!TCMALLOC_PAGE_FENCE || strcmp(TCMALLOC_PAGE_FENCE, "1")) {
-        srs_trace("gmd enabled without env TCMALLOC_PAGE_FENCE=1");
-    } else {
-        srs_trace("env TCMALLOC_PAGE_FENCE=1");
-    }
-#endif
+    srs_trace("start daemon mode...");
 
-    // we check the config when the log initialized.
-    if ((ret = _srs_config->check_config()) != ERROR_SUCCESS) {
-        return ret;
-    }
-
-    // features
-    show_macro_features();
-
-    /**
-    * we do nothing in the constructor of server,
-    * and use initialize to create members, set hooks for instance the reload handler,
-    * all initialize will done in this stage.
-    */
-    if ((ret = _srs_server->initialize(NULL)) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    return run();
-}
-
-int run()
-{
-    // if not deamon, directly run master.
-    if (!_srs_config->get_deamon()) {
-        return run_master();
-    }
-    
-    srs_trace("start deamon mode...");
-    
     int pid = fork();
-    
-    if(pid < 0) {
-        srs_error("create process error. ret=-1"); //ret=0
-        return -1;
+
+    if (pid < 0) {
+        return srs_error_new(-1, "fork father process");
     }
 
     // grandpa
-    if(pid > 0) {
+    if (pid > 0) {
         int status = 0;
-        if(waitpid(pid, &status, 0) == -1) {
-            srs_error("wait child process error! ret=-1"); //ret=0
-        }
+        waitpid(pid, &status, 0);
         srs_trace("grandpa process exit.");
         exit(0);
     }
 
     // father
     pid = fork();
-    
-    if(pid < 0) {
-        srs_error("create process error. ret=0");
-        return -1;
+
+    if (pid < 0) {
+        return srs_error_new(-1, "fork child process");
     }
 
-    if(pid > 0) {
-        srs_trace("father process exit. ret=0");
+    if (pid > 0) {
+        srs_trace("father process exit");
         exit(0);
     }
 
     // son
-    srs_trace("son(deamon) process running.");
-    
-    return run_master();
+    srs_trace("son(daemon) process running.");
+
+    if ((err = run_srs_server()) != srs_success) {
+        return srs_error_wrap(err, "daemon run server");
+    }
+
+    return err;
 }
 
-int run_master()
+srs_error_t run_srs_server()
 {
-    int ret = ERROR_SUCCESS;
-    
-    if ((ret = _srs_server->initialize_st()) != ERROR_SUCCESS) {
-        return ret;
+    srs_error_t err = srs_success;
+
+    // Initialize global and thread-local variables.
+    if ((err = srs_global_initialize()) != srs_success) {
+        return srs_error_wrap(err, "global init");
     }
 
-    if ((ret = _srs_server->initialize_signal()) != ERROR_SUCCESS) {
-        return ret;
+    // For primordial thread, share the default cid.
+    _srs_context->set_id(_srs_context->get_id());
+
+    _srs_server = new SrsServer();
+    _srs_server->assemble();
+
+    // Do some system initialize.
+    if ((err = _srs_server->initialize()) != srs_success) {
+        return srs_error_wrap(err, "hybrid initialize");
     }
-    
-    if ((ret = _srs_server->acquire_pid_file()) != ERROR_SUCCESS) {
-        return ret;
+
+    // Should run util hybrid servers all done.
+    if ((err = _srs_server->run()) != srs_success) {
+        return srs_error_wrap(err, "hybrid run");
     }
-    
-    if ((ret = _srs_server->listen()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if ((ret = _srs_server->register_signal()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if ((ret = _srs_server->http_handle()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if ((ret = _srs_server->ingest()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if ((ret = _srs_server->start_kafka()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if ((ret = _srs_server->cycle()) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    return 0;
+
+    // After all done, stop and cleanup.
+    _srs_server->stop();
+
+    return err;
 }
-
+// LCOV_EXCL_STOP

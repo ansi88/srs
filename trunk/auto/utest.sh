@@ -2,35 +2,29 @@
 #
 # params:
 #     $SRS_OBJS the objs directory to store the Makefile. ie. ./objs
-#     $SRS_OBJS_DIR the objs directory for Makefile. ie. objs
-#     $SRS_MAKEFILE the makefile name. ie. Makefile
+#     $SRS_OBJS the objs directory for Makefile. ie. objs
 #
 #     $APP_NAME the app name to output. ie. srs_utest
 #     $MODULE_DIR the src dir of utest code. ie. src/utest
 #     $LINK_OPTIONS the link options for utest. ie. -lpthread -ldl
 
-FILE=${SRS_OBJS}/utest/${SRS_MAKEFILE}
+FILE=${SRS_OBJS}/${SRS_PLATFORM}/utest/Makefile
 # create dir for Makefile
-mkdir -p ${SRS_OBJS}/utest
+mkdir -p ${SRS_OBJS}/${SRS_PLATFORM}/utest
 
 # the prefix to generate the objs/utest/Makefile
 # dirs relative to current dir(objs/utest), it's trunk/objs/utest
 # trunk of srs, which contains the src dir, relative to objs/utest, it's trunk
-SRS_TRUNK_PREFIX=../..
-# gest dir, relative to objs/utest, it's trunk/objs/gtest
-GTEST_DIR=${SRS_TRUNK_PREFIX}/${SRS_OBJS_DIR}/gtest
+SRS_TRUNK_PREFIX=../../..
+# gest dir, relative to objs/utest, it's trunk/objs/{Platform}/gtest
+GTEST_DIR=../3rdparty/gtest/googletest
 
-# the extra defines to compile utest.
-EXTRA_DEFINES=""
-
-# for osx to disable the error.
-# gtest/include/gtest/internal/gtest-port.h:499:13: fatal error: 'tr1/tuple' file not found
-if [ $SRS_OSX = YES ]; then
-    EXTRA_DEFINES="$EXTRA_DEFINES -DGTEST_HAS_TR1_TUPLE=0"
-fi
+# Whether enable C++11 or higher versions.
+# For linux, always use C++11 for gtest required, see https://github.com/google/googletest
+SRS_CPP_VERSION="-std=c++11"
 
 cat << END > ${FILE}
-# user must run make the ${SRS_OBJS_DIR}/utest dir
+# user must run make the ${SRS_OBJS}/utest dir
 # at the same dir of Makefile.
 
 # A sample Makefile for building Google Test and using it in user
@@ -54,15 +48,20 @@ GTEST_DIR = ${GTEST_DIR}
 # Where to find user code.
 USER_DIR = .
 
+# C++ compiler
+CXX = ${SRS_TOOL_CXX}
+
 # Flags passed to the preprocessor.
 CPPFLAGS += -I\$(GTEST_DIR)/include
 
 # Flags passed to the C++ compiler.
-CXXFLAGS += -g -Wall -Wextra -O0 ${EXTRA_DEFINES}
+CXXFLAGS += ${CXXFLAGS} ${UTEST_EXTRA_DEFINES}
+CXXFLAGS += -Wno-unused-private-field -Wno-unused-command-line-argument
+CXXFLAGS += ${SRS_CPP_VERSION}
 
 # All tests produced by this Makefile.  Remember to add new tests you
 # created to the list.
-TESTS = ${SRS_TRUNK_PREFIX}/${SRS_OBJS_DIR}/${APP_NAME}
+TESTS = ${SRS_TRUNK_PREFIX}/${SRS_OBJS}/${APP_NAME}
 
 # All Google Test headers.  Usually you shouldn't change this
 # definition.
@@ -127,7 +126,11 @@ done
 #
 # depends library header files
 for item in ${ModuleLibIncs[*]}; do
-    echo -n "-I${SRS_TRUNK_PREFIX}/${item} " >> ${FILE}
+    if [[ "${item:0:1}" == "/" ]]; then
+        echo -n "-I${item} " >> ${FILE}
+    else
+        echo -n "-I${SRS_TRUNK_PREFIX}/${item} " >> ${FILE}
+    fi
 done
 echo "" >> ${FILE}; echo "" >> ${FILE}
 
@@ -135,14 +138,23 @@ echo "" >> ${FILE}; echo "" >> ${FILE}
 # Depends, the depends objects
 echo "# Depends, the depends objects" >> ${FILE}
 #
-# current module header files
-echo -n "SRS_UTEST_DEPS = " >> ${FILE}
+# current SRS object files
+echo -n "SRS_SOURCE_OBJS = " >> ${FILE}
 for item in ${MODULE_OBJS[*]}; do
     FILE_NAME=${item%.*}
-    echo -n "${SRS_TRUNK_PREFIX}/${SRS_OBJS_DIR}/${FILE_NAME}.o " >> ${FILE}
+    echo -n "${SRS_TRUNK_PREFIX}/${SRS_OBJS}/${FILE_NAME}.o " >> ${FILE}
 done
 echo "" >> ${FILE}; echo "" >> ${FILE}
 #
+# current SRS header files
+echo -n "SRS_SOURCE_HEADERS = " >> ${FILE}
+for item in ${MODULE_OBJS[*]}; do
+    FILE_NAME=${item%.*}
+    echo -n "${SRS_TRUNK_PREFIX}/${FILE_NAME}.hpp " >> ${FILE}
+done
+echo "" >> ${FILE}; echo "" >> ${FILE}
+#
+# current utest header files
 echo "# Depends, utest header files" >> ${FILE}
 DEPS_NAME="UTEST_DEPS"
 echo -n "${DEPS_NAME} = " >> ${FILE}
@@ -160,7 +172,7 @@ MODULE_OBJS=()
 for item in ${MODULE_FILES[*]}; do
     MODULE_OBJS="${MODULE_OBJS[@]} ${item}.o"
     cat << END >> ${FILE}
-${item}.o : \$(${DEPS_NAME}) ${SRS_TRUNK_PREFIX}/${MODULE_DIR}/${item}.cpp \$(SRS_UTEST_DEPS)
+${item}.o : \$(${DEPS_NAME}) ${SRS_TRUNK_PREFIX}/${MODULE_DIR}/${item}.cpp \$(SRS_SOURCE_HEADERS)
 	\$(CXX) \$(CPPFLAGS) \$(CXXFLAGS) \$(SRS_UTEST_INC) -c ${SRS_TRUNK_PREFIX}/${MODULE_DIR}/${item}.cpp -o \$@
 END
 done
@@ -173,18 +185,22 @@ echo "" >> ${FILE}
 echo "# link all depends libraries" >> ${FILE}
 echo -n "DEPS_LIBRARIES_FILES = " >> ${FILE}
 for item in ${ModuleLibFiles[*]}; do
-    echo -n "${SRS_TRUNK_PREFIX}/${item} " >> ${FILE}
+    if [[ "${item:0:1}" == "/" ]]; then
+        echo -n "${item} " >> ${FILE}
+    else
+        echo -n "${SRS_TRUNK_PREFIX}/${item} " >> ${FILE}
+    fi
 done
 echo "" >> ${FILE}; echo "" >> ${FILE}
 #
 echo "# generate the utest binary" >> ${FILE}
 cat << END >> ${FILE}
-${SRS_TRUNK_PREFIX}/${SRS_OBJS_DIR}/${APP_NAME} : \$(SRS_UTEST_DEPS) ${MODULE_OBJS} gtest_main.a
+${SRS_TRUNK_PREFIX}/${SRS_OBJS}/${APP_NAME} : \$(SRS_SOURCE_OBJS) ${MODULE_OBJS} gtest.a
 	\$(CXX) -o \$@ \$(CPPFLAGS) \$(CXXFLAGS) \$^ \$(DEPS_LIBRARIES_FILES) ${LINK_OPTIONS}
 END
 
 #####################################################################################
 # parent Makefile, to create module output dir before compile it.
-echo "	@mkdir -p ${SRS_OBJS_DIR}/utest" >> ${SRS_WORKDIR}/${SRS_MAKEFILE}
+echo "	@mkdir -p ${SRS_OBJS}/utest" >> ${SRS_MAKEFILE}
 
-echo -n "generate utest ok"; echo '!';
+echo -n "Generate utest ok"; echo '!';

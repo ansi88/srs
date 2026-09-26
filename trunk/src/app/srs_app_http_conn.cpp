@@ -1,1174 +1,278 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #include <srs_app_http_conn.hpp>
 
-#if defined(SRS_AUTO_HTTP_CORE)
-
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <sstream>
 using namespace std;
 
-#include <srs_protocol_stream.hpp>
-#include <srs_protocol_utility.hpp>
-#include <srs_kernel_log.hpp>
-#include <srs_kernel_error.hpp>
-#include <srs_app_st.hpp>
-#include <srs_core_autofree.hpp>
 #include <srs_app_config.hpp>
-#include <srs_kernel_utility.hpp>
-#include <srs_kernel_file.hpp>
-#include <srs_kernel_flv.hpp>
-#include <srs_rtmp_stack.hpp>
-#include <srs_app_source.hpp>
-#include <srs_rtmp_msg_array.hpp>
-#include <srs_kernel_aac.hpp>
-#include <srs_kernel_mp3.hpp>
-#include <srs_kernel_ts.hpp>
-#include <srs_app_pithy_print.hpp>
-#include <srs_app_source.hpp>
-#include <srs_app_server.hpp>
+#include <srs_app_factory.hpp>
+#include <srs_app_http_api.hpp>
+#include <srs_app_http_hooks.hpp>
 #include <srs_app_http_static.hpp>
 #include <srs_app_http_stream.hpp>
-#include <srs_app_http_api.hpp>
-#include <srs_protocol_json.hpp>
-#include <srs_app_http_hooks.hpp>
-#include <srs_protocol_amf0.hpp>
+#include <srs_app_rtmp_source.hpp>
+#include <srs_app_server.hpp>
+#include <srs_app_st.hpp>
+#include <srs_app_statistic.hpp>
 #include <srs_app_utility.hpp>
+#include <srs_core_autofree.hpp>
+#include <srs_kernel_aac.hpp>
+#include <srs_kernel_error.hpp>
+#include <srs_kernel_file.hpp>
+#include <srs_kernel_flv.hpp>
+#include <srs_kernel_log.hpp>
+#include <srs_kernel_mp3.hpp>
+#include <srs_kernel_pithy_print.hpp>
+#include <srs_kernel_ts.hpp>
+#include <srs_kernel_utility.hpp>
+#include <srs_protocol_amf0.hpp>
+#include <srs_protocol_json.hpp>
+#include <srs_protocol_rtmp_msg_array.hpp>
+#include <srs_protocol_rtmp_stack.hpp>
+#include <srs_protocol_stream.hpp>
+#include <srs_protocol_utility.hpp>
 
-#endif
-
-#ifdef SRS_AUTO_HTTP_CORE
-
-SrsHttpResponseWriter::SrsHttpResponseWriter(SrsStSocket* io)
+void srs_http_stream_serve_error(ISrsHttpResponseWriter *w, srs_error_t err)
 {
-    skt = io;
-    hdr = new SrsHttpHeader();
-    header_wrote = false;
-    status = SRS_CONSTS_HTTP_OK;
-    content_length = -1;
-    written = 0;
-    header_sent = false;
-    nb_iovss_cache = 0;
-    iovss_cache = NULL;
-}
-
-SrsHttpResponseWriter::~SrsHttpResponseWriter()
-{
-    srs_freep(hdr);
-    srs_freepa(iovss_cache);
-}
-
-int SrsHttpResponseWriter::final_request()
-{
-    // write the header data in memory.
-    if (!header_wrote) {
-        write_header(SRS_CONSTS_HTTP_OK);
-    }
-
-    // complete the chunked encoding.
-    if (content_length == -1) {
-        std::stringstream ss;
-        ss << 0 << SRS_HTTP_CRLF << SRS_HTTP_CRLF;
-        std::string ch = ss.str();
-        return skt->write((void*)ch.data(), (int)ch.length(), NULL);
-    }
-    
-    // flush when send with content length
-    return write(NULL, 0);
-}
-
-SrsHttpHeader* SrsHttpResponseWriter::header()
-{
-    return hdr;
-}
-
-int SrsHttpResponseWriter::write(char* data, int size)
-{
-    int ret = ERROR_SUCCESS;
-    
-    // write the header data in memory.
-    if (!header_wrote) {
-        write_header(SRS_CONSTS_HTTP_OK);
-    }
-    
-    // whatever header is wrote, we should try to send header.
-    if ((ret = send_header(data, size)) != ERROR_SUCCESS) {
-        srs_error("http: send header failed. ret=%d", ret);
-        return ret;
-    }
-    
-    // check the bytes send and content length.
-    written += size;
-    if (content_length != -1 && written > content_length) {
-        ret = ERROR_HTTP_CONTENT_LENGTH;
-        srs_error("http: exceed content length. ret=%d", ret);
-        return ret;
-    }
-    
-    // ignore NULL content.
-    if (!data) {
-        return ret;
-    }
-    
-    // directly send with content length
-    if (content_length != -1) {
-        return skt->write((void*)data, size, NULL);
-    }
-    
-    // send in chunked encoding.
-    int nb_size = snprintf(header_cache, SRS_HTTP_HEADER_CACHE_SIZE, "%x", size);
-    
-    iovec iovs[4];
-    iovs[0].iov_base = (char*)header_cache;
-    iovs[0].iov_len = (int)nb_size;
-    iovs[1].iov_base = (char*)SRS_HTTP_CRLF;
-    iovs[1].iov_len = 2;
-    iovs[2].iov_base = (char*)data;
-    iovs[2].iov_len = size;
-    iovs[3].iov_base = (char*)SRS_HTTP_CRLF;
-    iovs[3].iov_len = 2;
-    
-    ssize_t nwrite;
-    if ((ret = skt->writev(iovs, 4, &nwrite)) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    return ret;
-}
-
-int SrsHttpResponseWriter::writev(iovec* iov, int iovcnt, ssize_t* pnwrite)
-{
-    int ret = ERROR_SUCCESS;
-    
-    // when header not ready, or not chunked, send one by one.
-    if (!header_wrote || content_length != -1) {
-        ssize_t nwrite = 0;
-        for (int i = 0; i < iovcnt; i++) {
-            iovec* piovc = iov + i;
-            nwrite += piovc->iov_len;
-            if ((ret = write((char*)piovc->iov_base, (int)piovc->iov_len)) != ERROR_SUCCESS) {
-                return ret;
-            }
-        }
-        
-        if (pnwrite) {
-            *pnwrite = nwrite;
-        }
-        
-        return ret;
-    }
-    
-    // ignore NULL content.
-    if (iovcnt <= 0) {
-        return ret;
-    }
-    
-    // send in chunked encoding.
-    int nb_iovss = 3 + iovcnt;
-    iovec* iovss = iovss_cache;
-    if (nb_iovss_cache < nb_iovss) {
-        srs_freepa(iovss_cache);
-        nb_iovss_cache = nb_iovss;
-        iovss = iovss_cache = new iovec[nb_iovss];
-    }
-    
-    // send in chunked encoding.
-    
-    // chunk size.
-    int size = 0;
-    for (int i = 0; i < iovcnt; i++) {
-        iovec* data_iov = iov + i;
-        size += data_iov->iov_len;
-    }
-    written += size;
-    
-    // chunk header
-    int nb_size = snprintf(header_cache, SRS_HTTP_HEADER_CACHE_SIZE, "%x", size);
-    iovec* iovs = iovss;
-    iovs[0].iov_base = (char*)header_cache;
-    iovs[0].iov_len = (int)nb_size;
-    iovs++;
-    
-    // chunk header eof.
-    iovs[0].iov_base = (char*)SRS_HTTP_CRLF;
-    iovs[0].iov_len = 2;
-    iovs++;
-    
-    // chunk body.
-    for (int i = 0; i < iovcnt; i++) {
-        iovec* data_iov = iov + i;
-        iovs[0].iov_base = (char*)data_iov->iov_base;
-        iovs[0].iov_len = (int)data_iov->iov_len;
-        iovs++;
-    }
-    
-    // chunk body eof.
-    iovs[0].iov_base = (char*)SRS_HTTP_CRLF;
-    iovs[0].iov_len = 2;
-    iovs++;
-    
-    // sendout all ioves.
-    ssize_t nwrite;
-    if ((ret = srs_write_large_iovs(skt, iovss, nb_iovss, &nwrite)) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    if (pnwrite) {
-        *pnwrite = nwrite;
-    }
-    
-    return ret;
-}
-
-void SrsHttpResponseWriter::write_header(int code)
-{
-    if (header_wrote) {
-        srs_warn("http: multiple write_header calls, code=%d", code);
+    // Nothing to report when the viewer was served, or when the response is already on the wire, in
+    // which case the status can no longer be changed and writing again would corrupt the stream.
+    if (err == srs_success || w->header_wrote()) {
         return;
     }
-    
-    header_wrote = true;
-    status = code;
-    
-    // parse the content length from header.
-    content_length = hdr->content_length();
-}
 
-int SrsHttpResponseWriter::send_header(char* data, int size)
-{
-    int ret = ERROR_SUCCESS;
-    
-    if (header_sent) {
-        return ret;
+    // Map the error onto a status for the viewer. Add a new error here rather than at the place
+    // that raises it, so that every status of HTTP streaming is decided in one place.
+    int code = srs_error_code(err);
+
+    int status = 0;
+    if (code == ERROR_SYSTEM_AUTH) {
+        // Refused by the on_play HTTP callback, see the http_hooks_on_play of each streaming handler.
+        status = SRS_CONSTS_HTTP_Unauthorized;
     }
-    header_sent = true;
-    
-    std::stringstream ss;
-    
-    // status_line
-    ss << "HTTP/1.1 " << status << " "
-        << srs_generate_http_status_text(status) << SRS_HTTP_CRLF;
-    
-    // detect content type
-    if (srs_go_http_body_allowd(status)) {
-        if (hdr->content_type().empty()) {
-            hdr->set_content_type(srs_go_http_detect(data, size));
-        }
+
+    // Keep closing the connection for an error we have no status for yet, which is what SRS has
+    // always done, rather than answering every failure with a misleading generic status.
+    if (!status) {
+        return;
     }
-    
-    // set server if not set.
-    if (hdr->get("Server").empty()) {
-        hdr->set("Server", RTMP_SIG_SRS_SERVER);
-    }
-    
-    // chunked encoding
-    if (content_length == -1) {
-        hdr->set("Transfer-Encoding", "chunked");
-    }
-    
-    // keep alive to make vlc happy.
-    hdr->set("Connection", "Keep-Alive");
-    
-    // write headers
-    hdr->write(ss);
-    
-    // header_eof
-    ss << SRS_HTTP_CRLF;
-    
-    std::string buf = ss.str();
-    return skt->write((void*)buf.c_str(), buf.length(), NULL);
+
+    // Note that we send the error code and its short name, never srs_error_desc, which may carry the
+    // callback URL or the response of the callback backend.
+    string msg = srs_fmt_sprintf("%d: %s", code, srs_error_code_str(err).c_str());
+
+    // Ignore the write error, because the caller returns the error that explains the refusal, which
+    // matters more to the operator than a viewer that already went away.
+    srs_error_t r0 = srs_go_http_error(w, status, msg);
+    srs_freep(r0);
 }
 
-SrsHttpResponseReader::SrsHttpResponseReader(SrsHttpMessage* msg, ISrsProtocolReaderWriter* io)
-{
-    skt = io;
-    owner = msg;
-    is_eof = false;
-    nb_total_read = 0;
-    nb_left_chunk = 0;
-    buffer = NULL;
-}
-
-SrsHttpResponseReader::~SrsHttpResponseReader()
+ISrsHttpConnOwner::ISrsHttpConnOwner()
 {
 }
 
-int SrsHttpResponseReader::initialize(SrsFastStream* body)
+ISrsHttpConnOwner::~ISrsHttpConnOwner()
 {
-    int ret = ERROR_SUCCESS;
-    
-    nb_chunk = 0;
-    nb_left_chunk = 0;
-    nb_total_read = 0;
-    buffer = body;
-    
-    return ret;
 }
 
-bool SrsHttpResponseReader::eof()
+ISrsHttpConn::ISrsHttpConn()
 {
-    return is_eof;
 }
 
-int SrsHttpResponseReader::read(char* data, int nb_data, int* nb_read)
+ISrsHttpConn::~ISrsHttpConn()
 {
-    int ret = ERROR_SUCCESS;
-    
-    if (is_eof) {
-        ret = ERROR_HTTP_RESPONSE_EOF;
-        srs_error("http: response EOF. ret=%d", ret);
-        return ret;
-    }
-    
-    // chunked encoding.
-    if (owner->is_chunked()) {
-        return read_chunked(data, nb_data, nb_read);
-    }
-    
-    // read by specified content-length
-    if (owner->content_length() != -1) {
-        int max = (int)owner->content_length() - (int)nb_total_read;
-        if (max <= 0) {
-            is_eof = true;
-            return ret;
-        }
-        
-        // change the max to read.
-        nb_data = srs_min(nb_data, max);
-        return read_specified(data, nb_data, nb_read);
-    }
-    
-    // infinite chunked mode, directly read.
-    if (owner->is_infinite_chunked()) {
-        srs_assert(!owner->is_chunked() && owner->content_length() == -1);
-        return read_specified(data, nb_data, nb_read);
-    }
-    
-    // infinite chunked mode, but user not set it,
-    // we think there is no data left.
-    is_eof = true;
-    
-    return ret;
 }
 
-int SrsHttpResponseReader::read_chunked(char* data, int nb_data, int* nb_read)
+SrsHttpConn::SrsHttpConn(ISrsHttpConnOwner *handler, ISrsProtocolReadWriter *fd, ISrsCommonHttpHandler *m, string cip, int cport)
 {
-    int ret = ERROR_SUCCESS;
-    
-    // when no bytes left in chunk,
-    // parse the chunk length first.
-    if (nb_left_chunk <= 0) {
-        char* at = NULL;
-        int length = 0;
-        while (!at) {
-            // find the CRLF of chunk header end.
-            char* start = buffer->bytes();
-            char* end = start + buffer->size();
-            for (char* p = start; p < end - 1; p++) {
-                if (p[0] == SRS_HTTP_CR && p[1] == SRS_HTTP_LF) {
-                    // invalid chunk, ignore.
-                    if (p == start) {
-                        ret = ERROR_HTTP_INVALID_CHUNK_HEADER;
-                        srs_error("chunk header start with CRLF. ret=%d", ret);
-                        return ret;
-                    }
-                    length = (int)(p - start + 2);
-                    at = buffer->read_slice(length);
-                    break;
-                }
-            }
-            
-            // got at, ok.
-            if (at) {
-                break;
-            }
-            
-            // when empty, only grow 1bytes, but the buffer will cache more.
-            if ((ret = buffer->grow(skt, buffer->size() + 1)) != ERROR_SUCCESS) {
-                if (!srs_is_client_gracefully_close(ret)) {
-                    srs_error("read body from server failed. ret=%d", ret);
-                }
-                return ret;
-            }
-        }
-        srs_assert(length >= 3);
-        
-        // it's ok to set the pos and pos+1 to NULL.
-        at[length - 1] = 0;
-        at[length - 2] = 0;
-        
-        // size is the bytes size, excludes the chunk header and end CRLF.
-        int ilength = (int)::strtol(at, NULL, 16);
-        if (ilength < 0) {
-            ret = ERROR_HTTP_INVALID_CHUNK_HEADER;
-            srs_error("chunk header negative, length=%d. ret=%d", ilength, ret);
-            return ret;
-        }
-        
-        // all bytes in chunk is left now.
-        nb_chunk = nb_left_chunk = ilength;
-    }
-    
-    if (nb_chunk <= 0) {
-        // for the last chunk, eof.
-        is_eof = true;
-    } else {
-        // for not the last chunk, there must always exists bytes.
-        // left bytes in chunk, read some.
-        srs_assert(nb_left_chunk);
-        
-        int nb_bytes = srs_min(nb_left_chunk, nb_data);
-        ret = read_specified(data, nb_bytes, &nb_bytes);
-        
-        // the nb_bytes used for output already read size of bytes.
-        if (nb_read) {
-            *nb_read = nb_bytes;
-        }
-        nb_left_chunk -= nb_bytes;
-        srs_info("http: read %d bytes of chunk", nb_bytes);
-        
-        // error or still left bytes in chunk, ignore and read in future.
-        if (nb_left_chunk > 0 || (ret != ERROR_SUCCESS)) {
-            return ret;
-        }
-        srs_info("http: read total chunk %dB", nb_chunk);
-    }
-    
-    // for both the last or not, the CRLF of chunk payload end.
-    if ((ret = buffer->grow(skt, 2)) != ERROR_SUCCESS) {
-        if (!srs_is_client_gracefully_close(ret)) {
-            srs_error("read EOF of chunk from server failed. ret=%d", ret);
-        }
-        return ret;
-    }
-    buffer->read_slice(2);
-    
-    return ret;
+    parser_ = new SrsHttpParser();
+    auth_ = new SrsHttpAuthMux(m);
+    cors_ = new SrsHttpCorsMux(auth_);
+
+    http_mux_ = m;
+    handler_ = handler;
+
+    skt_ = fd;
+    ip_ = cip;
+    port_ = cport;
+    create_time_ = 0;
+    delta_ = new SrsNetworkDelta();
+    trd_ = NULL;
+
+    config_ = _srs_config;
+    app_factory_ = _srs_app_factory;
+    context_ = _srs_context;
 }
 
-int SrsHttpResponseReader::read_specified(char* data, int nb_data, int* nb_read)
+void SrsHttpConn::assemble()
 {
-    int ret = ERROR_SUCCESS;
-    
-    if (buffer->size() <= 0) {
-        // when empty, only grow 1bytes, but the buffer will cache more.
-        if ((ret = buffer->grow(skt, 1)) != ERROR_SUCCESS) {
-            if (!srs_is_client_gracefully_close(ret)) {
-                srs_error("read body from server failed. ret=%d", ret);
-            }
-            return ret;
-        }
-    }
-    
-    int nb_bytes = srs_min(nb_data, buffer->size());
-    
-    // read data to buffer.
-    srs_assert(nb_bytes);
-    char* p = buffer->read_slice(nb_bytes);
-    memcpy(data, p, nb_bytes);
-    if (nb_read) {
-        *nb_read = nb_bytes;
-    }
-    
-    // increase the total read to determine whether EOF.
-    nb_total_read += nb_bytes;
-    
-    // for not chunked and specified content length.
-    if (!owner->is_chunked() && owner->content_length() != -1) {
-        // when read completed, eof.
-        if (nb_total_read >= (int)owner->content_length()) {
-            is_eof = true;
-        }
-    }
-    
-    return ret;
-}
-
-SrsHttpMessage::SrsHttpMessage(ISrsProtocolReaderWriter* io, SrsConnection* c) : ISrsHttpMessage()
-{
-    conn = c;
-    chunked = false;
-    infinite_chunked = false;
-    keep_alive = true;
-    _uri = new SrsHttpUri();
-    _body = new SrsHttpResponseReader(this, io);
-    _http_ts_send_buffer = new char[SRS_HTTP_TS_SEND_BUFFER_SIZE];
-    jsonp = false;
-}
-
-SrsHttpMessage::~SrsHttpMessage()
-{
-    srs_freep(_body);
-    srs_freep(_uri);
-    srs_freepa(_http_ts_send_buffer);
-}
-
-int SrsHttpMessage::update(string url, bool allow_jsonp, http_parser* header, SrsFastStream* body, vector<SrsHttpHeaderField>& headers)
-{
-    int ret = ERROR_SUCCESS;
-    
-    _url = url;
-    _header = *header;
-    _headers = headers;
-    
-    // whether chunked.
-    std::string transfer_encoding = get_request_header("Transfer-Encoding");
-    chunked = (transfer_encoding == "chunked");
-    
-    // whether keep alive.
-    keep_alive = http_should_keep_alive(header);
-    
-    // set the buffer.
-    if ((ret = _body->initialize(body)) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    // parse uri from url.
-    std::string host = get_request_header("Host");
-    
-    // use server public ip when no host specified.
-    // to make telnet happy.
-    if (host.empty()) {
-        host= srs_get_public_internet_address();
-    }
-    
-    // parse uri to schema/server:port/path?query
-    std::string uri = "http://" + host + _url;
-    if ((ret = _uri->initialize(uri)) != ERROR_SUCCESS) {
-        return ret;
-    }
-    
-    // parse ext.
-    _ext = srs_path_filext(_uri->get_path());
-    
-    // parse query string.
-    srs_parse_query_string(_uri->get_query(), _query);
-    
-    // parse jsonp request message.
-    if (allow_jsonp) {
-        if (!query_get("callback").empty()) {
-            jsonp = true;
-        }
-        if (jsonp) {
-            jsonp_method = query_get("method");
-        }
-    }
-    
-    return ret;
-}
-
-SrsConnection* SrsHttpMessage::connection()
-{
-    return conn;
-}
-
-u_int8_t SrsHttpMessage::method()
-{
-    if (jsonp && !jsonp_method.empty()) {
-        if (jsonp_method == "GET") {
-            return SRS_CONSTS_HTTP_GET;
-        } else if (jsonp_method == "PUT") {
-            return SRS_CONSTS_HTTP_PUT;
-        } else if (jsonp_method == "POST") {
-            return SRS_CONSTS_HTTP_POST;
-        } else if (jsonp_method == "DELETE") {
-            return SRS_CONSTS_HTTP_DELETE;
-        }
-    }
-    
-    return (u_int8_t)_header.method;
-}
-
-u_int16_t SrsHttpMessage::status_code()
-{
-    return (u_int16_t)_header.status_code;
-}
-
-string SrsHttpMessage::method_str()
-{
-    if (jsonp && !jsonp_method.empty()) {
-        return jsonp_method;
-    }
-    
-    if (is_http_get()) {
-        return "GET";
-    }
-    if (is_http_put()) {
-        return "PUT";
-    }
-    if (is_http_post()) {
-        return "POST";
-    }
-    if (is_http_delete()) {
-        return "DELETE";
-    }
-    if (is_http_options()) {
-        return "OPTIONS";
-    }
-    
-    return "OTHER";
-}
-
-bool SrsHttpMessage::is_http_get()
-{
-    return method() == SRS_CONSTS_HTTP_GET;
-}
-
-bool SrsHttpMessage::is_http_put()
-{
-    return method() == SRS_CONSTS_HTTP_PUT;
-}
-
-bool SrsHttpMessage::is_http_post()
-{
-    return method() == SRS_CONSTS_HTTP_POST;
-}
-
-bool SrsHttpMessage::is_http_delete()
-{
-    return method() == SRS_CONSTS_HTTP_DELETE;
-}
-
-bool SrsHttpMessage::is_http_options()
-{
-    return _header.method == SRS_CONSTS_HTTP_OPTIONS;
-}
-
-bool SrsHttpMessage::is_chunked()
-{
-    return chunked;
-}
-
-bool SrsHttpMessage::is_keep_alive()
-{
-    return keep_alive;
-}
-
-bool SrsHttpMessage::is_infinite_chunked()
-{
-    return infinite_chunked;
-}
-
-string SrsHttpMessage::uri()
-{
-    std::string uri = _uri->get_schema();
-    if (uri.empty()) {
-        uri += "http";
-    }
-    uri += "://";
-    
-    uri += host();
-    uri += path();
-    
-    return uri;
-}
-
-string SrsHttpMessage::url()
-{
-    return _uri->get_url();
-}
-
-string SrsHttpMessage::host()
-{
-    return _uri->get_host();
-}
-
-string SrsHttpMessage::path()
-{
-    return _uri->get_path();
-}
-
-string SrsHttpMessage::query()
-{
-    return _uri->get_query();
-}
-
-string SrsHttpMessage::ext()
-{
-    return _ext;
-}
-
-int SrsHttpMessage::parse_rest_id(string pattern)
-{
-    string p = _uri->get_path();
-    if (p.length() <= pattern.length()) {
-        return -1;
-    }
-    
-    string id = p.substr((int)pattern.length());
-    if (!id.empty()) {
-        return ::atoi(id.c_str());
-    }
-    
-    return -1;
-}
-
-int SrsHttpMessage::enter_infinite_chunked()
-{
-    int ret = ERROR_SUCCESS;
-    
-    if (infinite_chunked) {
-        return ret;
-    }
-    
-    if (is_chunked() || content_length() != -1) {
-        ret = ERROR_HTTP_DATA_INVALID;
-        srs_error("infinite chunkted not supported in specified codec. ret=%d", ret);
-        return ret;
-    }
-    
-    infinite_chunked = true;
-    
-    return ret;
-}
-
-int SrsHttpMessage::body_read_all(string& body)
-{
-    int ret = ERROR_SUCCESS;
-    
-    // cache to read.
-    char* buf = new char[SRS_HTTP_READ_CACHE_BYTES];
-    SrsAutoFreeA(char, buf);
-    
-    // whatever, read util EOF.
-    while (!_body->eof()) {
-        int nb_read = 0;
-        if ((ret = _body->read(buf, SRS_HTTP_READ_CACHE_BYTES, &nb_read)) != ERROR_SUCCESS) {
-            return ret;
-        }
-        
-        if (nb_read > 0) {
-            body.append(buf, nb_read);
-        }
-    }
-    
-    return ret;
-}
-
-ISrsHttpResponseReader* SrsHttpMessage::body_reader()
-{
-    return _body;
-}
-
-int64_t SrsHttpMessage::content_length()
-{
-    return _header.content_length;
-}
-
-string SrsHttpMessage::query_get(string key)
-{
-    std::string v;
-    
-    if (_query.find(key) != _query.end()) {
-        v = _query[key];
-    }
-    
-    return v;
-}
-
-int SrsHttpMessage::request_header_count()
-{
-    return (int)_headers.size();
-}
-
-string SrsHttpMessage::request_header_key_at(int index)
-{
-    srs_assert(index < request_header_count());
-    SrsHttpHeaderField item = _headers[index];
-    return item.first;
-}
-
-string SrsHttpMessage::request_header_value_at(int index)
-{
-    srs_assert(index < request_header_count());
-    SrsHttpHeaderField item = _headers[index];
-    return item.second;
-}
-
-string SrsHttpMessage::get_request_header(string name)
-{
-    std::vector<SrsHttpHeaderField>::iterator it;
-    
-    for (it = _headers.begin(); it != _headers.end(); ++it) {
-        SrsHttpHeaderField& elem = *it;
-        std::string key = elem.first;
-        std::string value = elem.second;
-        if (key == name) {
-            return value;
-        }
-    }
-    
-    return "";
-}
-
-SrsRequest* SrsHttpMessage::to_request(string vhost)
-{
-    SrsRequest* req = new SrsRequest();
-    
-    // http path, for instance, /live/livestream.flv, parse to
-    //      app: /live
-    //      stream: livestream.flv
-    srs_parse_rtmp_url(_uri->get_path(), req->app, req->stream);
-    
-    // trim the start slash, for instance, /live to live
-    req->app = srs_string_trim_start(req->app, "/");
-    
-    // remove the extension, for instance, livestream.flv to livestream
-    req->stream = srs_path_filename(req->stream);
-    
-    // generate others.
-    req->tcUrl = "rtmp://" + vhost + "/" + req->app;
-    req->pageUrl = get_request_header("Referer");
-    req->objectEncoding = 0;
-    
-    srs_discovery_tc_url(req->tcUrl, req->schema, req->host, req->vhost, req->app, req->port, req->param);
-    req->strip();
-    
-    // reset the host to http request host.
-    if (req->host == SRS_CONSTS_RTMP_DEFAULT_VHOST) {
-        req->host = _uri->get_host();
-    }
-    
-    return req;
-}
-
-bool SrsHttpMessage::is_jsonp()
-{
-    return jsonp;
-}
-
-SrsHttpParser::SrsHttpParser()
-{
-    buffer = new SrsFastStream();
-}
-
-SrsHttpParser::~SrsHttpParser()
-{
-    srs_freep(buffer);
-}
-
-int SrsHttpParser::initialize(enum http_parser_type type, bool allow_jsonp)
-{
-    int ret = ERROR_SUCCESS;
-    
-    jsonp = allow_jsonp;
-    
-    memset(&settings, 0, sizeof(settings));
-    settings.on_message_begin = on_message_begin;
-    settings.on_url = on_url;
-    settings.on_header_field = on_header_field;
-    settings.on_header_value = on_header_value;
-    settings.on_headers_complete = on_headers_complete;
-    settings.on_body = on_body;
-    settings.on_message_complete = on_message_complete;
-    
-    http_parser_init(&parser, type);
-    // callback object ptr.
-    parser.data = (void*)this;
-    
-    return ret;
-}
-
-int SrsHttpParser::parse_message(ISrsProtocolReaderWriter* io, SrsConnection* conn, ISrsHttpMessage** ppmsg)
-{
-    *ppmsg = NULL;
-    
-    int ret = ERROR_SUCCESS;
-    
-    // reset request data.
-    field_name = "";
-    field_value = "";
-    expect_field_name = true;
-    state = SrsHttpParseStateInit;
-    header = http_parser();
-    url = "";
-    headers.clear();
-    header_parsed = 0;
-    
-    // do parse
-    if ((ret = parse_message_imp(io)) != ERROR_SUCCESS) {
-        if (!srs_is_client_gracefully_close(ret)) {
-            srs_error("parse http msg failed. ret=%d", ret);
-        }
-        return ret;
-    }
-    
-    // create msg
-    SrsHttpMessage* msg = new SrsHttpMessage(io, conn);
-    
-    // initalize http msg, parse url.
-    if ((ret = msg->update(url, jsonp, &header, buffer, headers)) != ERROR_SUCCESS) {
-        srs_error("initialize http msg failed. ret=%d", ret);
-        srs_freep(msg);
-        return ret;
-    }
-    
-    // parse ok, return the msg.
-    *ppmsg = msg;
-    
-    return ret;
-}
-
-int SrsHttpParser::parse_message_imp(ISrsProtocolReaderWriter* io)
-{
-    int ret = ERROR_SUCCESS;
-    
-    while (true) {
-        ssize_t nparsed = 0;
-        
-        // when got entire http header, parse it.
-        // @see https://github.com/ossrs/srs/issues/400
-        char* start = buffer->bytes();
-        char* end = start + buffer->size();
-        for (char* p = start; p <= end - 4; p++) {
-            // SRS_HTTP_CRLFCRLF "\r\n\r\n" // 0x0D0A0D0A
-            if (p[0] == SRS_CONSTS_CR && p[1] == SRS_CONSTS_LF && p[2] == SRS_CONSTS_CR && p[3] == SRS_CONSTS_LF) {
-                nparsed = http_parser_execute(&parser, &settings, buffer->bytes(), buffer->size());
-                srs_info("buffer=%d, nparsed=%d, header=%d", buffer->size(), (int)nparsed, header_parsed);
-                break;
-            }
-        }
-        
-        // consume the parsed bytes.
-        if (nparsed && header_parsed) {
-            buffer->read_slice(header_parsed);
-        }
-        
-        // ok atleast header completed,
-        // never wait for body completed, for maybe chunked.
-        if (state == SrsHttpParseStateHeaderComplete || state == SrsHttpParseStateMessageComplete) {
-            break;
-        }
-        
-        // when nothing parsed, read more to parse.
-        if (nparsed == 0) {
-            // when requires more, only grow 1bytes, but the buffer will cache more.
-            if ((ret = buffer->grow(io, buffer->size() + 1)) != ERROR_SUCCESS) {
-                if (!srs_is_client_gracefully_close(ret)) {
-                    srs_error("read body from server failed. ret=%d", ret);
-                }
-                return ret;
-            }
-        }
-    }
-    
-    // parse last header.
-    if (!field_name.empty() && !field_value.empty()) {
-        headers.push_back(std::make_pair(field_name, field_value));
-    }
-    
-    return ret;
-}
-
-int SrsHttpParser::on_message_begin(http_parser* parser)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    obj->state = SrsHttpParseStateStart;
-    
-    srs_info("***MESSAGE BEGIN***");
-    
-    return 0;
-}
-
-int SrsHttpParser::on_headers_complete(http_parser* parser)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    obj->header = *parser;
-    // save the parser when header parse completed.
-    obj->state = SrsHttpParseStateHeaderComplete;
-    obj->header_parsed = (int)parser->nread;
-    
-    srs_info("***HEADERS COMPLETE***");
-    
-    // see http_parser.c:1570, return 1 to skip body.
-    return 0;
-}
-
-int SrsHttpParser::on_message_complete(http_parser* parser)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    // save the parser when body parse completed.
-    obj->state = SrsHttpParseStateMessageComplete;
-    
-    srs_info("***MESSAGE COMPLETE***\n");
-    
-    return 0;
-}
-
-int SrsHttpParser::on_url(http_parser* parser, const char* at, size_t length)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    if (length > 0) {
-        obj->url.append(at, (int)length);
-    }
-    
-    srs_info("Method: %d, Url: %.*s", parser->method, (int)length, at);
-    
-    return 0;
-}
-
-int SrsHttpParser::on_header_field(http_parser* parser, const char* at, size_t length)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    // field value=>name, reap the field.
-    if (!obj->expect_field_name) {
-        obj->headers.push_back(std::make_pair(obj->field_name, obj->field_value));
-        
-        // reset the field name when parsed.
-        obj->field_name = "";
-        obj->field_value = "";
-    }
-    obj->expect_field_name = true;
-    
-    if (length > 0) {
-        obj->field_name.append(at, (int)length);
-    }
-    
-    srs_info("Header field(%d bytes): %.*s", (int)length, (int)length, at);
-    return 0;
-}
-
-int SrsHttpParser::on_header_value(http_parser* parser, const char* at, size_t length)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    if (length > 0) {
-        obj->field_value.append(at, (int)length);
-    }
-    obj->expect_field_name = false;
-    
-    srs_info("Header value(%d bytes): %.*s", (int)length, (int)length, at);
-    return 0;
-}
-
-int SrsHttpParser::on_body(http_parser* parser, const char* at, size_t length)
-{
-    SrsHttpParser* obj = (SrsHttpParser*)parser->data;
-    srs_assert(obj);
-    
-    srs_info("Body: %.*s", (int)length, at);
-    
-    return 0;
-}
-
-SrsHttpConn::SrsHttpConn(IConnectionManager* cm, st_netfd_t fd, ISrsHttpServeMux* m, string cip)
-    : SrsConnection(cm, fd, cip)
-{
-    parser = new SrsHttpParser();
-    http_mux = m;
+    create_time_ = srs_time_now_cached();
+    delta_->set_io(skt_, skt_);
+    trd_ = app_factory_->create_coroutine("http", this, context_->get_id());
 }
 
 SrsHttpConn::~SrsHttpConn()
 {
-    srs_freep(parser);
-}
-
-void SrsHttpConn::resample()
-{
-    // TODO: FIXME: implements it
-}
-
-int64_t SrsHttpConn::get_send_bytes_delta()
-{
-    // TODO: FIXME: implements it
-    return 0;
-}
-
-int64_t SrsHttpConn::get_recv_bytes_delta()
-{
-    // TODO: FIXME: implements it
-    return 0;
-}
-
-void SrsHttpConn::cleanup()
-{
-    // TODO: FIXME: implements it
-}
-
-int SrsHttpConn::do_cycle()
-{
-    int ret = ERROR_SUCCESS;
-    
-    srs_trace("HTTP client ip=%s", ip.c_str());
-    
-    // initialize parser
-    if ((ret = parser->initialize(HTTP_REQUEST, false)) != ERROR_SUCCESS) {
-        srs_error("http initialize http parser failed. ret=%d", ret);
-        return ret;
+    if (trd_) {
+        trd_->interrupt();
     }
+    srs_freep(trd_);
+
+    srs_freep(parser_);
+    srs_freep(cors_);
+    srs_freep(auth_);
+
+    srs_freep(delta_);
+
+    config_ = NULL;
+    app_factory_ = NULL;
+    context_ = NULL;
+}
+
+// LCOV_EXCL_START
+std::string SrsHttpConn::desc()
+{
+    return "HttpConn";
+}
+
+ISrsKbpsDelta *SrsHttpConn::delta()
+{
+    return delta_;
+}
+// LCOV_EXCL_STOP
+
+srs_error_t SrsHttpConn::start()
+{
+    srs_error_t err = srs_success;
+
+    if ((err = trd_->start()) != srs_success) {
+        return srs_error_wrap(err, "coroutine");
+    }
+
+    return err;
+}
+
+srs_error_t SrsHttpConn::cycle()
+{
+    srs_error_t err = do_cycle();
+
+    // Notify handler to handle it.
+    // @remark The error may be transformed by handler.
+    err = handler_->on_conn_done(err);
+
+    // success.
+    if (err == srs_success) {
+        srs_trace("client finished.");
+        return err;
+    }
+
+    // It maybe success with message.
+    if (srs_error_code(err) == ERROR_SUCCESS) {
+        srs_trace("client finished%s.", srs_error_summary(err).c_str());
+        srs_freep(err);
+        return err;
+    }
+
+    // client close peer.
+    // TODO: FIXME: Only reset the error when client closed it.
+    if (srs_is_client_gracefully_close(err)) {
+        srs_warn("client disconnect peer. ret=%d", srs_error_code(err));
+    } else if (srs_is_server_gracefully_close(err)) {
+        srs_warn("server disconnect. ret=%d", srs_error_code(err));
+    } else {
+        srs_error("serve error %s", srs_error_desc(err).c_str());
+    }
+
+    srs_freep(err);
+    return srs_success;
+}
+
+srs_error_t SrsHttpConn::do_cycle()
+{
+    srs_error_t err = srs_success;
 
     // set the recv timeout, for some clients never disconnect the connection.
     // @see https://github.com/ossrs/srs/issues/398
-    skt->set_recv_timeout(SRS_HTTP_RECV_TIMEOUT_US);
+    skt_->set_recv_timeout(SRS_HTTP_RECV_TIMEOUT);
 
-    SrsRequest* last_req = NULL;
-    SrsAutoFree(SrsRequest, last_req);
+    // initialize parser
+    if ((err = parser_->initialize(HTTP_REQUEST)) != srs_success) {
+        return srs_error_wrap(err, "init parser for %s", ip_.c_str());
+    }
 
-    // process http messages.
-    while (!disposed) {
-        ISrsHttpMessage* req = NULL;
+    // Notify the handler that we are starting to process the connection.
+    if ((err = handler_->on_start()) != srs_success) {
+        return srs_error_wrap(err, "start");
+    }
+
+    // process all http messages.
+    ISrsRequest *last_req_raw = NULL;
+    err = process_requests(&last_req_raw);
+    SrsUniquePtr<ISrsRequest> last_req(last_req_raw);
+
+    srs_error_t r0 = srs_success;
+    if ((r0 = on_disconnect(last_req.get())) != srs_success) {
+        err = srs_error_wrap(err, "on disconnect %s", srs_error_desc(r0).c_str());
+        srs_freep(r0);
+    }
+
+    return err;
+}
+
+srs_error_t SrsHttpConn::process_requests(ISrsRequest **preq)
+{
+    srs_error_t err = srs_success;
+
+    for (int req_id = 0;; req_id++) {
+        if ((err = trd_->pull()) != srs_success) {
+            return srs_error_wrap(err, "pull");
+        }
 
         // get a http message
-        if ((ret = parser->parse_message(skt, this, &req)) != ERROR_SUCCESS) {
-            break;
+        ISrsHttpMessage *req_raw = NULL;
+        if ((err = parser_->parse_message(skt_, &req_raw)) != srs_success) {
+            return srs_error_wrap(err, "parse message");
         }
 
         // if SUCCESS, always NOT-NULL.
-        srs_assert(req);
-
         // always free it in this scope.
-        SrsAutoFree(ISrsHttpMessage, req);
+        srs_assert(req_raw);
+        SrsUniquePtr<ISrsHttpMessage> req(req_raw);
 
-        // get the last request, for report the info of request on connection disconnect.
-        delete last_req;
-        SrsHttpMessage* hreq = dynamic_cast<SrsHttpMessage*>(req);
-        last_req = hreq->to_request(hreq->host());
+        // It must be a owner setter interface.
+        ISrsHttpMessageOwnerSetter *hreq = dynamic_cast<ISrsHttpMessageOwnerSetter *>(req.get());
+        srs_assert(hreq);
+
+        // Attach owner connection to message.
+        hreq->set_connection(this);
+
+        // copy request to last request object.
+        srs_freep(*preq);
+        *preq = hreq->to_request(hreq->host());
 
         // may should discard the body.
-        if ((ret = on_got_http_message(req)) != ERROR_SUCCESS) {
-            break;
+        SrsUniquePtr<ISrsHttpResponseWriter> writer(app_factory_->create_http_response_writer(skt_));
+        if ((err = handler_->on_http_message(req.get(), writer.get())) != srs_success) {
+            return srs_error_wrap(err, "on http message");
         }
 
         // ok, handle http request.
-        SrsHttpResponseWriter writer(skt);
-        if ((ret = process_request(&writer, req)) != ERROR_SUCCESS) {
-            break;
+        if ((err = process_request(writer.get(), req.get(), req_id)) != srs_success) {
+            return srs_error_wrap(err, "process request=%d", req_id);
+        }
+
+        // After the request is processed.
+        if ((err = handler_->on_message_done(req.get(), writer.get())) != srs_success) {
+            return srs_error_wrap(err, "on message done");
         }
 
         // donot keep alive, disconnect it.
@@ -1178,149 +282,389 @@ int SrsHttpConn::do_cycle()
         }
     }
 
-    int disc_ret = ERROR_SUCCESS;
-    if ((disc_ret = on_disconnect(last_req)) != ERROR_SUCCESS) {
-        srs_warn("connection on disconnect peer failed, but ignore this error. disc_ret=%d, ret=%d", disc_ret, ret);
-    }
-
-    return ret;
+    return err;
 }
 
-int SrsHttpConn::process_request(ISrsHttpResponseWriter* w, ISrsHttpMessage* r) 
+srs_error_t SrsHttpConn::process_request(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, int rid)
 {
-    int ret = ERROR_SUCCESS;
-    
-    srs_trace("HTTP %s %s, content-length=%"PRId64"", 
-        r->method_str().c_str(), r->url().c_str(), r->content_length());
-    
-    // use default server mux to serve http request.
-    if ((ret = http_mux->serve_http(w, r)) != ERROR_SUCCESS) {
-        if (!srs_is_client_gracefully_close(ret)) {
-            srs_error("serve http msg failed. ret=%d", ret);
+    srs_error_t err = srs_success;
+
+    srs_trace("HTTP #%d %s:%d %s %s, content-length=%" PRId64 "", rid, ip_.c_str(), port_,
+              r->method_str().c_str(), r->url().c_str(), r->content_length());
+
+    // proxy to cors-->auth-->http_remux.
+    if ((err = cors_->serve_http(w, r)) != srs_success) {
+        return srs_error_wrap(err, "cors serve");
+    }
+
+    return err;
+}
+
+srs_error_t SrsHttpConn::on_disconnect(ISrsRequest *req)
+{
+    // TODO: FIXME: Implements it.
+    return srs_success;
+}
+
+ISrsHttpConnOwner *SrsHttpConn::handler()
+{
+    return handler_;
+}
+
+srs_error_t SrsHttpConn::pull()
+{
+    return trd_->pull();
+}
+
+srs_error_t SrsHttpConn::set_crossdomain_enabled(bool v)
+{
+    srs_error_t err = srs_success;
+
+    if ((err = cors_->initialize(v)) != srs_success) {
+        return srs_error_wrap(err, "init cors");
+    }
+
+    return err;
+}
+
+srs_error_t SrsHttpConn::set_auth_enabled(bool auth_enabled)
+{
+    srs_error_t err = srs_success;
+
+    ISrsHttpAuthenticator *authenticator = NULL;
+    if (auth_enabled) {
+        string type = config_->get_http_api_auth_type();
+        if (type == "basic") {
+            authenticator = new SrsHttpBasicAuthenticator(
+                config_->get_http_api_auth_username(), config_->get_http_api_auth_password());
+        } else if (type == "bearer") {
+            authenticator = new SrsHttpBearerAuthenticator(
+                config_->get_http_api_auth_token(), config_->get_http_api_auth_rtc_bearer_enabled());
+        } else {
+            return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "invalid http api auth type=%s", type.c_str());
         }
-        return ret;
     }
-    
-    return ret;
-}
 
-int SrsHttpConn::on_disconnect(SrsRequest* req)
-{
-    int ret = ERROR_SUCCESS;
-    // TODO: implements it.s
-    return ret;
-}
-
-SrsResponseOnlyHttpConn::SrsResponseOnlyHttpConn(IConnectionManager* cm, st_netfd_t fd, ISrsHttpServeMux* m, string cip)
-    : SrsHttpConn(cm, fd, m, cip)
-{
-}
-
-SrsResponseOnlyHttpConn::~SrsResponseOnlyHttpConn()
-{
-}
-
-int SrsResponseOnlyHttpConn::on_got_http_message(ISrsHttpMessage* msg)
-{
-    int ret = ERROR_SUCCESS;
-    
-    ISrsHttpResponseReader* br = msg->body_reader();
-    
-    // when not specified the content length, ignore.
-    if (msg->content_length() == -1) {
-        return ret;
+    // Initialize the auth mux, which owns the authenticator.
+    if ((err = auth_->initialize(authenticator)) != srs_success) {
+        srs_freep(authenticator);
+        return srs_error_wrap(err, "init auth");
     }
-    
+
+    return err;
+}
+
+srs_error_t SrsHttpConn::set_jsonp(bool v)
+{
+    parser_->set_jsonp(v);
+    return srs_success;
+}
+
+string SrsHttpConn::remote_ip()
+{
+    return ip_;
+}
+
+// LCOV_EXCL_START
+const SrsContextId &SrsHttpConn::get_id()
+{
+    return trd_->cid();
+}
+
+void SrsHttpConn::expire()
+{
+    trd_->interrupt();
+}
+// LCOV_EXCL_STOP
+
+ISrsHttpxConn::ISrsHttpxConn()
+{
+}
+
+ISrsHttpxConn::~ISrsHttpxConn()
+{
+}
+
+SrsHttpxConn::SrsHttpxConn(ISrsResourceManager *cm, ISrsProtocolReadWriter *io, ISrsCommonHttpHandler *m, string cip, int port, string key, string cert) : manager_(cm), io_(io), enable_stat_(false), ssl_key_file_(key), ssl_cert_file_(cert)
+{
+    ssl_ = NULL;
+    conn_ = NULL;
+
+    http_mux_ = m;
+    ip_ = cip;
+    port_ = port;
+
+    config_ = _srs_config;
+    stat_ = _srs_stat;
+    context_ = _srs_context;
+}
+
+void SrsHttpxConn::assemble()
+{
+    // Create a identify for this client.
+    context_->set_id(context_->generate_id());
+
+    if (!ssl_key_file_.empty() &&
+        !ssl_cert_file_.empty()) {
+        ssl_ = new SrsSslConnection(io_);
+        SrsHttpConn *conn = new SrsHttpConn(this, ssl_, http_mux_, ip_, port_);
+        conn->assemble();
+        conn_ = conn;
+    } else {
+        SrsHttpConn *conn = new SrsHttpConn(this, io_, http_mux_, ip_, port_);
+        conn->assemble();
+        conn_ = conn;
+    }
+}
+
+SrsHttpxConn::~SrsHttpxConn()
+{
+    srs_freep(conn_);
+    srs_freep(ssl_);
+    srs_freep(io_);
+
+    config_ = NULL;
+    stat_ = NULL;
+    context_ = NULL;
+}
+
+void SrsHttpxConn::set_enable_stat(bool v)
+{
+    enable_stat_ = v;
+}
+
+srs_error_t SrsHttpxConn::pop_message(ISrsHttpMessage **preq)
+{
+    srs_error_t err = srs_success;
+
+    const int SRS_HTTP_READ_CACHE_BYTES = 4096;
+
+    ISrsProtocolReadWriter *io = io_;
+    if (ssl_) {
+        io = ssl_;
+    }
+
+    // Check user interrupt by interval.
+    io->set_recv_timeout(3 * SRS_UTIME_SECONDS);
+
+    // We start a socket to read the stfd, which is writing by conn.
+    // It's ok, because conn never read it after processing the HTTP request.
     // drop all request body.
-    while (!br->eof()) {
-        char body[4096];
-        if ((ret = br->read(body, 4096, NULL)) != ERROR_SUCCESS) {
-            return ret;
+    static char body[SRS_HTTP_READ_CACHE_BYTES];
+    while (true) {
+        if ((err = conn_->pull()) != srs_success) {
+            return srs_error_wrap(err, "timeout");
+        }
+
+        if ((err = io->read(body, SRS_HTTP_READ_CACHE_BYTES, NULL)) != srs_success) {
+            // Because we use timeout to check trd state, so we should ignore any timeout.
+            if (srs_error_code(err) == ERROR_SOCKET_TIMEOUT) {
+                srs_freep(err);
+                continue;
+            }
+
+            return srs_error_wrap(err, "read response");
         }
     }
-    
-    return ret;
+
+    return err;
 }
 
-SrsHttpServer::SrsHttpServer(SrsServer* svr)
+srs_error_t SrsHttpxConn::on_start()
 {
-    server = svr;
-    http_stream = new SrsHttpStreamServer(svr);
-    http_static = new SrsHttpStaticServer(svr);
+    srs_error_t err = srs_success;
+
+    // Enable JSONP for HTTP API.
+    if ((err = conn_->set_jsonp(true)) != srs_success) {
+        return srs_error_wrap(err, "set jsonp");
+    }
+
+    // Do SSL handshake if HTTPS.
+    if (ssl_) {
+        srs_utime_t starttime = srs_time_now_realtime();
+        if ((err = ssl_->handshake(ssl_key_file_, ssl_cert_file_)) != srs_success) {
+            return srs_error_wrap(err, "handshake");
+        }
+
+        int cost = srsu2msi(srs_time_now_realtime() - starttime);
+        srs_trace("https: stream server done, use key %s and cert %s, cost=%dms",
+                  ssl_key_file_.c_str(), ssl_cert_file_.c_str(), cost);
+    }
+
+    return err;
+}
+
+srs_error_t SrsHttpxConn::on_http_message(ISrsHttpMessage *r, ISrsHttpResponseWriter *w)
+{
+    srs_error_t err = srs_success;
+
+    // After parsed the message, set the schema to https.
+    if (ssl_) {
+        SrsHttpMessage *hm = dynamic_cast<SrsHttpMessage *>(r);
+        hm->set_https(true);
+    }
+
+    // For each session, we use short-term HTTP connection.
+    SrsHttpHeader *hdr = w->header();
+    hdr->set("Connection", "Close");
+
+    return err;
+}
+
+srs_error_t SrsHttpxConn::on_message_done(ISrsHttpMessage *r, ISrsHttpResponseWriter *w)
+{
+    return srs_success;
+}
+
+srs_error_t SrsHttpxConn::on_conn_done(srs_error_t r0)
+{
+    // Only stat the HTTP streaming clients, ignore all API clients.
+    if (enable_stat_) {
+        stat_->on_disconnect(get_id().c_str(), r0);
+        stat_->kbps_add_delta(get_id().c_str(), conn_->delta());
+    }
+
+    // Because we use manager to manage this object,
+    // not the http connection object, so we must remove it here.
+    manager_->remove(this);
+
+    // For HTTP-API timeout, we think it's done successfully,
+    // because there may be no request or response for HTTP-API.
+    if (srs_error_code(r0) == ERROR_SOCKET_TIMEOUT) {
+        srs_freep(r0);
+        return srs_success;
+    }
+
+    return r0;
+}
+
+// LCOV_EXCL_START
+std::string SrsHttpxConn::desc()
+{
+    if (ssl_) {
+        return "HttpsConn";
+    }
+    return "HttpConn";
+}
+
+std::string SrsHttpxConn::remote_ip()
+{
+    return conn_->remote_ip();
+}
+
+const SrsContextId &SrsHttpxConn::get_id()
+{
+    return conn_->get_id();
+}
+// LCOV_EXCL_STOP
+
+srs_error_t SrsHttpxConn::start()
+{
+    srs_error_t err = srs_success;
+
+    bool v = config_->get_http_stream_crossdomain();
+    if ((err = conn_->set_crossdomain_enabled(v)) != srs_success) {
+        return srs_error_wrap(err, "set cors=%d", v);
+    }
+
+    bool auth_enabled = config_->get_http_api_auth_enabled();
+    if ((err = conn_->set_auth_enabled(auth_enabled)) != srs_success) {
+        return srs_error_wrap(err, "set auth");
+    }
+
+    return conn_->start();
+}
+
+ISrsKbpsDelta *SrsHttpxConn::delta()
+{
+    return conn_->delta();
+}
+
+ISrsHttpServer::ISrsHttpServer()
+{
+}
+
+ISrsHttpServer::~ISrsHttpServer()
+{
+}
+
+SrsHttpServer::SrsHttpServer()
+{
+    http_stream_ = new SrsHttpStreamServer();
+    http_static_ = new SrsHttpStaticServer();
+}
+
+void SrsHttpServer::assemble()
+{
+    http_stream_->assemble();
 }
 
 SrsHttpServer::~SrsHttpServer()
 {
-    srs_freep(http_stream);
-    srs_freep(http_static);
+    srs_freep(http_stream_);
+    srs_freep(http_static_);
 }
 
-int SrsHttpServer::initialize()
+srs_error_t SrsHttpServer::initialize()
 {
-    int ret = ERROR_SUCCESS;
-    
-#if defined(SRS_AUTO_HTTP_SERVER) && defined(SRS_AUTO_HTTP_API)
+    srs_error_t err = srs_success;
+
     // for SRS go-sharp to detect the status of HTTP server of SRS HTTP FLV Cluster.
-    if ((ret = http_static->mux.handle("/api/v1/versions", new SrsGoApiVersion())) != ERROR_SUCCESS) {
-        return ret;
+    if ((err = http_static_->mux()->handle("/api/v1/versions", new SrsGoApiVersion())) != srs_success) {
+        return srs_error_wrap(err, "handle versions");
     }
-#endif
-    
-    if ((ret = http_stream->initialize()) != ERROR_SUCCESS) {
-        return ret;
+
+    if ((err = http_stream_->initialize()) != srs_success) {
+        return srs_error_wrap(err, "http stream");
     }
-    
-    if ((ret = http_static->initialize()) != ERROR_SUCCESS) {
-        return ret;
+
+    if ((err = http_static_->initialize()) != srs_success) {
+        return srs_error_wrap(err, "http static");
     }
-    
-    return ret;
+
+    return err;
 }
 
-int SrsHttpServer::serve_http(ISrsHttpResponseWriter* w, ISrsHttpMessage* r)
+srs_error_t SrsHttpServer::handle(std::string pattern, ISrsHttpHandler *handler)
 {
-    // try http stream first.
-    if (http_stream->mux.can_serve(r)) {
-        return http_stream->mux.serve_http(w, r);
+    return http_static_->mux()->handle(pattern, handler);
+}
+
+srs_error_t SrsHttpServer::serve_http(ISrsHttpResponseWriter *w, ISrsHttpMessage *r)
+{
+    srs_error_t err = srs_success;
+
+    string path = r->path();
+    const char *p = path.data();
+
+    // For /api/ or /console/, try static only.
+    if (path.length() > 4 && p[0] == '/') {
+        bool is_api = memcmp(p, "/api/", 5) == 0;
+        bool is_console = path.length() > 8 && memcmp(p, "/console/", 9) == 0;
+        if (is_api || is_console) {
+            return http_static_->mux()->serve_http(w, r);
+        }
     }
-    
-    return http_static->mux.serve_http(w, r);
+
+    // Try http stream first, then http static if not found.
+    ISrsHttpHandler *h = NULL;
+    if ((err = http_stream_->mux()->find_handler(r, &h)) != srs_success) {
+        return srs_error_wrap(err, "find handler");
+    }
+    if (!h->is_not_found()) {
+        return http_stream_->mux()->serve_http(w, r);
+    }
+
+    // Use http static as default server.
+    return http_static_->mux()->serve_http(w, r);
 }
 
-int SrsHttpServer::http_mount(SrsSource* s, SrsRequest* r)
+srs_error_t SrsHttpServer::http_mount(ISrsRequest *r)
 {
-    return http_stream->http_mount(s, r);
+    return http_stream_->http_mount(r);
 }
 
-void SrsHttpServer::http_unmount(SrsSource* s, SrsRequest* r)
+void SrsHttpServer::http_unmount(ISrsRequest *r)
 {
-    http_stream->http_unmount(s, r);
+    http_stream_->http_unmount(r);
 }
-
-int SrsHttpServer::mount_hls(SrsRequest* r)
-{
-    return http_stream->mount_hls(r);
-}
-
-int SrsHttpServer::hls_update_m3u8(SrsRequest* r, std::string m3u8)
-{
-    return http_stream->hls_update_m3u8(r, m3u8);
-}
-
-int SrsHttpServer::hls_update_ts(SrsRequest* r, std::string uri, std::string ts)
-{
-    return http_stream->hls_update_ts(r, uri, ts);
-}
-
-int SrsHttpServer::hls_remove_ts(SrsRequest* r, std::string uri)
-{
-    return http_stream->hls_remove_ts(r, uri);
-}
-
-void SrsHttpServer::unmount_hls(SrsRequest* r)
-{
-    http_stream->unmount_hls(r);
-}
-
-#endif
-

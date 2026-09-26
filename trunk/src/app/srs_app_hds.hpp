@@ -1,66 +1,66 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_APP_HDS_HPP
 #define SRS_APP_HDS_HPP
 
 #include <srs_core.hpp>
 
-#ifdef SRS_AUTO_HDS
+#ifdef SRS_HDS
 
 #include <list>
 
-class SrsRequest;
-class SrsSharedPtrMessage;
+class ISrsRequest;
+class SrsMediaPacket;
 class SrsHdsFragment;
-class SrsSource;
+class SrsLiveSource;
 
-class SrsHds
+// The HDS interface.
+class ISrsHds
 {
 public:
-    SrsHds(SrsSource* s);
-    ~SrsHds();
+    ISrsHds();
+    virtual ~ISrsHds();
 
-    int on_publish(SrsRequest* req);
-    int on_unpublish();
+public:
+    virtual srs_error_t on_publish(ISrsRequest *req) = 0;
+    virtual srs_error_t on_unpublish() = 0;
+    virtual srs_error_t on_video(SrsMediaPacket *msg) = 0;
+    virtual srs_error_t on_audio(SrsMediaPacket *msg) = 0;
+};
 
-    int on_video(SrsSharedPtrMessage* msg);
-    int on_audio(SrsSharedPtrMessage* msg);
+// Mux RTMP to Adobe HDS streaming.
+class SrsHds : public ISrsHds
+{
+public:
+    SrsHds();
+    virtual ~SrsHds();
 
-private:
-    int flush_mainfest();
-    int flush_bootstrap();
+    srs_error_t on_publish(ISrsRequest *req);
+    srs_error_t on_unpublish();
+
+    srs_error_t on_video(SrsMediaPacket *msg);
+    srs_error_t on_audio(SrsMediaPacket *msg);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    srs_error_t flush_mainfest();
+    srs_error_t flush_bootstrap();
     void adjust_windows();
 
-private:
-    std::list<SrsHdsFragment *> fragments;
-    SrsHdsFragment *currentSegment;
-    int fragment_index;
-    SrsSharedPtrMessage *video_sh;
-    SrsSharedPtrMessage *audio_sh;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    std::list<SrsHdsFragment *> fragments_;
+    SrsHdsFragment *currentSegment_;
+    int fragment_index_;
+    SrsMediaPacket *video_sh_;
+    SrsMediaPacket *audio_sh_;
 
-    SrsRequest *hds_req;
-    bool hds_enabled;
+    ISrsRequest *hds_req_;
+    bool hds_enabled_;
 };
 
 #endif

@@ -11,11 +11,12 @@ echo "#ifndef SRS_AUTO_HEADER_HPP" >> $SRS_AUTO_HEADERS_H
 echo "#define SRS_AUTO_HEADER_HPP" >> $SRS_AUTO_HEADERS_H
 echo "" >> $SRS_AUTO_HEADERS_H
 
-echo "#define SRS_AUTO_BUILD_TS \"`date +%s`\"" >> $SRS_AUTO_HEADERS_H
-echo "#define SRS_AUTO_BUILD_DATE \"`date \"+%Y-%m-%d %H:%M:%S\"`\"" >> $SRS_AUTO_HEADERS_H
-echo "#define SRS_AUTO_UNAME \"`uname -a`\"" >> $SRS_AUTO_HEADERS_H
-echo "#define SRS_AUTO_USER_CONFIGURE \"${SRS_AUTO_USER_CONFIGURE}\"" >> $SRS_AUTO_HEADERS_H
-echo "#define SRS_AUTO_CONFIGURE \"${SRS_AUTO_CONFIGURE}\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_PACKAGER \"${SRS_AUTO_PACKAGER}\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_BUILD_TS \"`date +%s`\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_BUILD_DATE \"`date \"+%Y-%m-%d %H:%M:%S\"`\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_UNAME \"`uname -a`\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_USER_CONFIGURE \"${SRS_AUTO_USER_CONFIGURE}\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_CONFIGURE \"${SRS_AUTO_CONFIGURE}\"" >> $SRS_AUTO_HEADERS_H
 echo "" >> $SRS_AUTO_HEADERS_H
 
 function srs_define_macro()
@@ -39,234 +40,228 @@ function srs_undefine_macro()
     echo "#define ${macro}_BOOL false" >> $file
 }
 
-# export the preset.
-if [ $SRS_OSX = YES ]; then
-    srs_define_macro "SRS_OSX" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_X86_X64 = YES ]; then
-    srs_define_macro "SRS_X86_X64" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_ARM_UBUNTU12 = YES ]; then
-    srs_define_macro "SRS_ARM_UBUNTU12" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_MIPS_UBUNTU12 = YES ]; then
-    srs_define_macro "SRS_MIPS_UBUNTU12" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_PI = YES ]; then
-    srs_define_macro "SRS_PI" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_CUBIE = YES ]; then
-    srs_define_macro "SRS_CUBIE" $SRS_AUTO_HEADERS_H
-fi
-if [ $SRS_EXPORT_LIBRTMP_PROJECT != NO ]; then
-    echo "#define SRS_EXPORT_LIBRTMP" >> $SRS_AUTO_HEADERS_H
-else
-    echo "#undef SRS_EXPORT_LIBRTMP" >> $SRS_AUTO_HEADERS_H
-fi
-
-echo "" >> $SRS_AUTO_HEADERS_H
-
 #####################################################################################
 # generate auto headers file, depends on the finished of options.sh
 #####################################################################################
-# write to source file
-if [ $SRS_CROSS_BUILD = YES ]; then
-    __TOOL_CHAIN="cc=$SrsArmCC gcc=$SrsArmGCC g++=$SrsArmCXX ar=$SrsArmAR ld=$SrsArmLD randlib=$SrsArmRANDLIB" && echo "$__TOOL_CHAIN"
-    srs_define_macro_value "SRS_AUTO_EMBEDED_TOOL_CHAIN" "\"$__TOOL_CHAIN\"" $SRS_AUTO_HEADERS_H
-else
-    srs_undefine_macro "SRS_AUTO_EMBEDED_TOOL_CHAIN" $SRS_AUTO_HEADERS_H
-fi
-echo "" >> $SRS_AUTO_HEADERS_H
-
 # auto headers in depends.
-if [ $SRS_HTTP_CORE = YES ]; then
-    srs_define_macro "SRS_AUTO_HTTP_CORE" $SRS_AUTO_HEADERS_H
+if [[ $SRS_HDS == YES ]]; then
+    srs_define_macro "SRS_HDS" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HTTP_CORE" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_HDS" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_HTTP_SERVER = YES ]; then
-    srs_define_macro "SRS_AUTO_HTTP_SERVER" $SRS_AUTO_HEADERS_H
+srs_define_macro "SRS_SRT" $SRS_AUTO_HEADERS_H
+
+if [[ $SRS_CXX11 == YES ]]; then
+    srs_define_macro "SRS_CXX11" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HTTP_SERVER" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_CXX11" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_STREAM_CASTER = YES ]; then
-    srs_define_macro "SRS_AUTO_STREAM_CASTER" $SRS_AUTO_HEADERS_H
+if [[ $SRS_CXX14 == YES ]]; then
+    srs_define_macro "SRS_CXX14" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_STREAM_CASTER" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_CXX14" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_KAFKA = YES ]; then
-    srs_define_macro "SRS_AUTO_KAFKA" $SRS_AUTO_HEADERS_H
+if [[ $SRS_BACKTRACE == YES ]]; then
+    srs_define_macro "SRS_BACKTRACE" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_KAFKA" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_BACKTRACE" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_HTTP_API = YES ]; then
-    srs_define_macro "SRS_AUTO_HTTP_API" $SRS_AUTO_HEADERS_H
+srs_define_macro "SRS_RTC" $SRS_AUTO_HEADERS_H
+
+if [[ $SRS_RTSP == YES ]]; then
+    srs_define_macro "SRS_RTSP" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HTTP_API" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_RTSP" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_NGINX = YES ]; then
-    srs_define_macro "SRS_AUTO_NGINX" $SRS_AUTO_HEADERS_H
+if [[ $SRS_FFMPEG_FIT == YES ]]; then
+    srs_define_macro "SRS_FFMPEG_FIT" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_NGINX" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_FFMPEG_FIT" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_DVR = YES ]; then
-    srs_define_macro "SRS_AUTO_DVR" $SRS_AUTO_HEADERS_H
+if [[ $SRS_FFMPEG_OPUS == YES ]]; then
+    srs_define_macro "SRS_FFMPEG_OPUS" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_DVR" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_FFMPEG_OPUS" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_HLS = YES ]; then
-    srs_define_macro "SRS_AUTO_HLS" $SRS_AUTO_HEADERS_H
+# H.265/HEVC support is always enabled
+srs_define_macro "SRS_H265" $SRS_AUTO_HEADERS_H
+
+if [[ $SRS_SIMULATOR == YES ]]; then
+    srs_define_macro "SRS_SIMULATOR" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HLS" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_SIMULATOR" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_HDS = YES ]; then
-    srs_define_macro "SRS_AUTO_HDS" $SRS_AUTO_HEADERS_H
+if [[ $SRS_HTTPS == YES ]]; then
+    srs_define_macro "SRS_HTTPS" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HDS" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_HTTPS" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_HTTP_CALLBACK = YES ]; then
-    srs_define_macro "SRS_AUTO_HTTP_CALLBACK" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GB28181 == YES ]]; then
+    srs_define_macro "SRS_GB28181" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_HTTP_CALLBACK" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GB28181" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_SSL = YES ]; then
-    srs_define_macro "SRS_AUTO_SSL" $SRS_AUTO_HEADERS_H
+
+
+if [[ $SRS_UTEST == YES ]]; then
+    srs_define_macro "SRS_UTEST" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_SSL" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_UTEST" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_MEM_WATCH = YES ]; then
-    srs_define_macro "SRS_AUTO_MEM_WATCH" $SRS_AUTO_HEADERS_H
+if [[ $SRS_FORCE_PUBLIC4UTEST == YES ]]; then
+    srs_define_macro "SRS_FORCE_PUBLIC4UTEST" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_MEM_WATCH" $SRS_AUTO_HEADERS_H
-fi
-
-# whether compile ffmpeg tool
-if [ $SRS_FFMPEG_TOOL = YES ]; then
-    srs_define_macro "SRS_AUTO_FFMPEG_TOOL" $SRS_AUTO_HEADERS_H
-else
-    srs_undefine_macro "SRS_AUTO_FFMPEG_TOOL" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_FORCE_PUBLIC4UTEST" $SRS_AUTO_HEADERS_H
 fi
 
 # whatever the FFMPEG tools, if transcode and ingest specified,
 # srs always compile the FFMPEG tool stub which used to start the FFMPEG process.
-if [ $SRS_FFMPEG_STUB = YES ]; then
-    srs_define_macro "SRS_AUTO_FFMPEG_STUB" $SRS_AUTO_HEADERS_H
+if [[ $SRS_FFMPEG_STUB == YES ]]; then
+    srs_define_macro "SRS_FFMPEG_STUB" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_FFMPEG_STUB" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_FFMPEG_STUB" $SRS_AUTO_HEADERS_H
 fi
 
-if [ $SRS_TRANSCODE = YES ]; then
-    srs_define_macro "SRS_AUTO_TRANSCODE" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GPERF == YES ]]; then
+    srs_define_macro "SRS_GPERF" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_TRANSCODE" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GPERF" $SRS_AUTO_HEADERS_H
 fi
-
-if [ $SRS_INGEST = YES ]; then
-    srs_define_macro "SRS_AUTO_INGEST" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GPERF_MC == YES ]]; then
+    srs_define_macro "SRS_GPERF_MC" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_INGEST" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GPERF_MC" $SRS_AUTO_HEADERS_H
 fi
-
-# for statistic.
-if [ $SRS_STAT = YES ]; then
-    srs_define_macro "SRS_AUTO_STAT" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GPERF_MD == YES ]]; then
+    srs_define_macro "SRS_GPERF_MD" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_STAT" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GPERF_MD" $SRS_AUTO_HEADERS_H
 fi
-
-if [ $SRS_GPERF = YES ]; then
-    srs_define_macro "SRS_AUTO_GPERF" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GPERF_MP == YES ]]; then
+    srs_define_macro "SRS_GPERF_MP" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_GPERF" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GPERF_MP" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_GPERF_MC = YES ]; then
-    srs_define_macro "SRS_AUTO_GPERF_MC" $SRS_AUTO_HEADERS_H
+if [[ $SRS_GPERF_CP == YES ]]; then
+    srs_define_macro "SRS_GPERF_CP" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_GPERF_MC" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_GPERF_CP" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_GPERF_MD = YES ]; then
-    srs_define_macro "SRS_AUTO_GPERF_MD" $SRS_AUTO_HEADERS_H
+if [ $SRS_SANITIZER == YES ]; then
+    srs_define_macro "SRS_SANITIZER" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_GPERF_MD" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_SANITIZER" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_GPERF_MP = YES ]; then
-    srs_define_macro "SRS_AUTO_GPERF_MP" $SRS_AUTO_HEADERS_H
+if [ $SRS_SANITIZER_LOG == YES ]; then
+    srs_define_macro "SRS_SANITIZER_LOG" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_GPERF_MP" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_SANITIZER_LOG" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_GPERF_CP = YES ]; then
-    srs_define_macro "SRS_AUTO_GPERF_CP" $SRS_AUTO_HEADERS_H
+if [ $SRS_VALGRIND == YES ]; then
+    srs_define_macro "SRS_VALGRIND" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_GPERF_CP" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_VALGRIND" $SRS_AUTO_HEADERS_H
 fi
 
 #####################################################################################
 # for embeded.
 #####################################################################################
-if [ $SRS_CROSS_BUILD = YES ]; then
-    srs_define_macro "SRS_AUTO_EMBEDED_CPU" $SRS_AUTO_HEADERS_H
-else
-    srs_undefine_macro "SRS_AUTO_EMBEDED_CPU" $SRS_AUTO_HEADERS_H
-fi
-
-# arm
-if [ $SRS_ARM_UBUNTU12 = YES ]; then
-    srs_define_macro "SRS_AUTO_ARM_UBUNTU12" $SRS_AUTO_HEADERS_H
-else
-    srs_undefine_macro "SRS_AUTO_ARM_UBUNTU12" $SRS_AUTO_HEADERS_H
-fi
-
-# mips
-if [ $SRS_MIPS_UBUNTU12 = YES ]; then
-    srs_define_macro "SRS_AUTO_MIPS_UBUNTU12" $SRS_AUTO_HEADERS_H
-else
-    srs_undefine_macro "SRS_AUTO_MIPS_UBUNTU12" $SRS_AUTO_HEADERS_H
-fi
-
-echo "" >> $SRS_AUTO_HEADERS_H
 # for log level compile settings
-if [ $SRS_LOG_VERBOSE = YES ]; then
-    srs_define_macro "SRS_AUTO_VERBOSE" $SRS_AUTO_HEADERS_H
+if [[ $SRS_LOG_VERBOSE == YES ]]; then
+    srs_define_macro "SRS_VERBOSE" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_VERBOSE" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_VERBOSE" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_LOG_INFO = YES ]; then
-    srs_define_macro "SRS_AUTO_INFO" $SRS_AUTO_HEADERS_H
+if [[ $SRS_LOG_INFO == YES ]]; then
+    srs_define_macro "SRS_INFO" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_INFO" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_INFO" $SRS_AUTO_HEADERS_H
 fi
-if [ $SRS_LOG_TRACE = YES ]; then
-    srs_define_macro "SRS_AUTO_TRACE" $SRS_AUTO_HEADERS_H
+if [[ $SRS_LOG_TRACE == YES ]]; then
+    srs_define_macro "SRS_TRACE" $SRS_AUTO_HEADERS_H
 else
-    srs_undefine_macro "SRS_AUTO_TRACE" $SRS_AUTO_HEADERS_H
+    srs_undefine_macro "SRS_TRACE" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_SINGLE_THREAD == YES ]]; then
+    srs_define_macro "SRS_SINGLE_THREAD" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_SINGLE_THREAD" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_SIGNAL_API == YES ]]; then
+    srs_define_macro "SRS_SIGNAL_API" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_SIGNAL_API" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_LOG_LEVEL_V2 == YES ]]; then
+    srs_define_macro "SRS_LOG_LEVEL_V2" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_LOG_LEVEL_V2" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_CROSS_BUILD == YES ]]; then
+    srs_define_macro "SRS_CROSSBUILD" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_CROSSBUILD" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_CYGWIN64 == YES ]]; then
+    srs_define_macro "SRS_CYGWIN64" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_CYGWIN64" $SRS_AUTO_HEADERS_H
+fi
+if [[ $SRS_OSX == YES ]]; then
+    srs_define_macro "SRS_OSX" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_OSX" $SRS_AUTO_HEADERS_H
+fi
+
+if [[ $SRS_DEBUG == YES ]]; then
+    srs_define_macro "SRS_DEBUG" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_DEBUG" $SRS_AUTO_HEADERS_H
+fi
+
+if [[ $SRS_DEBUG_STATS == YES ]]; then
+    srs_define_macro "SRS_DEBUG_STATS" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_DEBUG_STATS" $SRS_AUTO_HEADERS_H
+fi
+
+if [[ $SRS_DEBUG_NACK_DROP == YES ]]; then
+    srs_define_macro "SRS_DEBUG_NACK_DROP" $SRS_AUTO_HEADERS_H
+else
+    srs_undefine_macro "SRS_DEBUG_NACK_DROP" $SRS_AUTO_HEADERS_H
 fi
 
 # prefix
 echo "" >> $SRS_AUTO_HEADERS_H
-echo "#define SRS_AUTO_PREFIX \"${SRS_PREFIX}\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_PREFIX \"${SRS_PREFIX}\"" >> $SRS_AUTO_HEADERS_H
+echo "#define SRS_DEFAULT_CONFIG \"${SRS_DEFAULT_CONFIG}\"" >> $SRS_AUTO_HEADERS_H
 
 echo "" >> $SRS_AUTO_HEADERS_H
 
 #####################################################################################
 # generated the contributors from AUTHORS.txt
 #####################################################################################
-SRS_CONSTRIBUTORS=`cat ../AUTHORS.txt|grep "*"|awk '{print $2}'`
-echo "#define SRS_AUTO_CONSTRIBUTORS \"\\" >> $SRS_AUTO_HEADERS_H
-for CONTRIBUTOR in $SRS_CONSTRIBUTORS; do
-    echo "${CONTRIBUTOR} \\" >> $SRS_AUTO_HEADERS_H
-done
-echo "\"" >> $SRS_AUTO_HEADERS_H
+if [[ -f AUTHORS.md ]]; then
+	RTMP_SIG_SRS_AUTHORS=$(cat AUTHORS.md|grep "^-"|awk -F '`' '{print $2}')
+	echo "#define RTMP_SIG_SRS_AUTHORS \"\\" >> $SRS_AUTO_HEADERS_H
+	for CONTRIBUTOR in $RTMP_SIG_SRS_AUTHORS; do
+	    echo "${CONTRIBUTOR} \\" >> $SRS_AUTO_HEADERS_H
+	done
+	echo "\"" >> $SRS_AUTO_HEADERS_H
+else
+	echo "#define RTMP_SIG_SRS_AUTHORS \"ossrs\"" >> $SRS_AUTO_HEADERS_H
+fi
 
 # new empty line to auto headers file.
 echo "" >> $SRS_AUTO_HEADERS_H

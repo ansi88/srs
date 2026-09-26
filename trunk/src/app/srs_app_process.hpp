@@ -1,116 +1,123 @@
-/*
- The MIT License (MIT)
- 
- Copyright (c) 2013-2016 SRS(ossrs)
- 
- Permission is hereby granted, free of charge, to any person obtaining a copy of
- this software and associated documentation files (the "Software"), to deal in
- the Software without restriction, including without limitation the rights to
- use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- the Software, and to permit persons to whom the Software is furnished to do so,
- subject to the following conditions:
- 
- The above copyright notice and this permission notice shall be included in all
- copies or substantial portions of the Software.
- 
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_APP_PROCESS_HPP
 #define SRS_APP_PROCESS_HPP
 
-/*
-#include <srs_app_process.hpp>
-*/
 #include <srs_core.hpp>
 
 #include <string>
 #include <vector>
 
-/**
- * to start and stop a process, cycle to restart the process when terminated.
- * the usage:
- *      // the binary is the process to fork.
- *      binary = "./objs/ffmpeg/bin/ffmpeg";
- *      // where argv is a array contains each params.
- *      argv = ["./objs/ffmpeg/bin/ffmpeg", "-i", "in.flv", "1", ">", "/dev/null", "2", ">", "/dev/null"];
- *
- *      process = new SrsProcess();
- *      if ((ret = process->initialize(binary, argv)) != ERROR_SUCCESS) { return ret; }
- *      if ((ret = process->start()) != ERROR_SUCCESS) { return ret; }
- *      if ((ret = process->cycle()) != ERROR_SUCCESS) { return ret; }
- *      process->fast_stop();
- *      process->stop();
- */
-class SrsProcess
+// The process interface.
+class ISrsProcess
 {
-private:
-    bool is_started;
-    // whether SIGTERM send but need to wait or SIGKILL.
-    bool fast_stopped;
-    pid_t pid;
-private:
-    std::string bin;
-    std::string stdout_file;
-    std::string stderr_file;
-    std::vector<std::string> params;
-    // the cli to fork process.
-    std::string cli;
-    std::string actual_cli;
+public:
+    ISrsProcess();
+    virtual ~ISrsProcess();
+
+public:
+    // Get pid of process.
+    virtual int get_pid() = 0;
+    // whether process is already started.
+    virtual bool started() = 0;
+    // Initialize the process with binary and argv.
+    virtual srs_error_t initialize(std::string binary, std::vector<std::string> argv) = 0;
+
+public:
+    // Start the process, ignore when already started.
+    virtual srs_error_t start() = 0;
+    // cycle check the process, update the state of process.
+    virtual srs_error_t cycle() = 0;
+    // Send SIGTERM then SIGKILL to ensure the process stopped.
+    virtual void stop() = 0;
+
+public:
+    // The fast stop is to send a SIGTERM.
+    virtual void fast_stop() = 0;
+    // Directly kill process, never use it except server quiting.
+    virtual void fast_kill() = 0;
+};
+
+// Start and stop a process. Call cycle to restart the process when terminated.
+// The usage:
+//      // the binary is the process to fork.
+//      binary = "./objs/ffmpeg/bin/ffmpeg";
+//      // where argv is a array contains each params.
+//      argv = ["./objs/ffmpeg/bin/ffmpeg", "-i", "in.flv", "1", ">", "/dev/null", "2", ">", "/dev/null"];
+//
+//      process = new SrsProcess();
+//      if ((ret = process->initialize(binary, argv)) != ERROR_SUCCESS) { return ret; }
+//      if ((ret = process->start()) != ERROR_SUCCESS) { return ret; }
+//      if ((ret = process->cycle()) != ERROR_SUCCESS) { return ret; }
+//      process->fast_stop();
+//      process->stop();
+class SrsProcess : public ISrsProcess
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    bool is_started_;
+    // Whether SIGTERM send but need to wait or SIGKILL.
+    bool fast_stopped_;
+    pid_t pid_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    std::string bin_;
+    std::string stdout_file_;
+    std::string stderr_file_;
+    std::vector<std::string> params_;
+    // The cli to fork process.
+    std::string cli_;
+    std::string actual_cli_;
+
 public:
     SrsProcess();
     virtual ~SrsProcess();
+
 public:
-    /**
-     * get pid of process.
-     */
+    // Get pid of process.
     virtual int get_pid();
-    /**
-     * whether process is already started.
-     */
+    // whether process is already started.
     virtual bool started();
-    /**
-     * initialize the process with binary and argv.
-     * @param binary the binary path to exec.
-     * @param argv the argv for binary path, the argv[0] generally is the binary.
-     * @remark the argv[0] must be the binary.
-     */
-    virtual int initialize(std::string binary, std::vector<std::string> argv);
+    // Initialize the process with binary and argv.
+    // @param binary the binary path to exec.
+    // @param argv the argv for binary path, the argv[0] generally is the binary.
+    // @remark the argv[0] must be the binary.
+    virtual srs_error_t initialize(std::string binary, std::vector<std::string> argv);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    // Redirect standard I/O.
+    virtual srs_error_t redirect_io();
+
 public:
-    /**
-     * start the process, ignore when already started.
-     */
-    virtual int start();
-    /**
-     * cycle check the process, update the state of process.
-     * @remark when process terminated(not started), user can restart it again by start().
-     */
-    virtual int cycle();
-    /**
-     * send SIGTERM then SIGKILL to ensure the process stopped.
-     * the stop will wait [0, SRS_PROCESS_QUIT_TIMEOUT_MS] depends on the
-     * process quit timeout.
-     * @remark use fast_stop before stop one by one, when got lots of process to quit.
-     */
+    // Start the process, ignore when already started.
+    virtual srs_error_t start();
+    // cycle check the process, update the state of process.
+    // @remark when process terminated(not started), user can restart it again by start().
+    virtual srs_error_t cycle();
+    // Send SIGTERM then SIGKILL to ensure the process stopped.
+    // the stop will wait [0, SRS_PROCESS_QUIT_TIMEOUT_MS] depends on the
+    // process quit timeout.
+    // @remark use fast_stop before stop one by one, when got lots of process to quit.
     virtual void stop();
+
 public:
-    /**
-     * the fast stop is to send a SIGTERM.
-     * for example, the ingesters owner lots of FFMPEG, it will take a long time
-     * to stop one by one, instead the ingesters can fast_stop all FFMPEG, then
-     * wait one by one to stop, it's more faster.
-     * @remark user must use stop() to ensure the ffmpeg to stopped.
-     * @remark we got N processes to stop, compare the time we spend,
-     *      when use stop without fast_stop, we spend maybe [0, SRS_PROCESS_QUIT_TIMEOUT_MS * N]
-     *      but use fast_stop then stop, the time is almost [0, SRS_PROCESS_QUIT_TIMEOUT_MS].
-     */
+    // The fast stop is to send a SIGTERM.
+    // for example, the ingesters owner lots of FFMPEG, it will take a long time
+    // to stop one by one, instead the ingesters can fast_stop all FFMPEG, then
+    // wait one by one to stop, it's more faster.
+    // @remark user must use stop() to ensure the ffmpeg to stopped.
+    // @remark we got N processes to stop, compare the time we spend,
+    //      when use stop without fast_stop, we spend maybe [0, SRS_PROCESS_QUIT_TIMEOUT_MS * N]
+    //      but use fast_stop then stop, the time is almost [0, SRS_PROCESS_QUIT_TIMEOUT_MS].
     virtual void fast_stop();
+    // Directly kill process, never use it except server quiting.
+    virtual void fast_kill();
 };
 
 #endif
-

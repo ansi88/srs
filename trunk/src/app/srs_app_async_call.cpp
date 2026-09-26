@@ -1,25 +1,8 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #include <srs_app_async_call.hpp>
 
@@ -27,9 +10,6 @@ using namespace std;
 
 #include <srs_kernel_error.hpp>
 #include <srs_kernel_log.hpp>
-
-// the sleep interval for http async callback.
-#define SRS_AUTO_ASYNC_CALLBACL_SLEEP_US 300000
 
 ISrsAsyncCallTask::ISrsAsyncCallTask()
 {
@@ -39,75 +19,116 @@ ISrsAsyncCallTask::~ISrsAsyncCallTask()
 {
 }
 
+ISrsAsyncCallWorker::ISrsAsyncCallWorker()
+{
+}
+
+ISrsAsyncCallWorker::~ISrsAsyncCallWorker()
+{
+}
+
 SrsAsyncCallWorker::SrsAsyncCallWorker()
 {
-    pthread = new SrsReusableThread("async", this, SRS_AUTO_ASYNC_CALLBACL_SLEEP_US);
-    wait = st_cond_new();
+    trd_ = new SrsDummyCoroutine();
+    wait_ = srs_cond_new();
+    lock_ = srs_mutex_new();
 }
 
 SrsAsyncCallWorker::~SrsAsyncCallWorker()
 {
-    srs_freep(pthread);
+    srs_freep(trd_);
 
-    std::vector<ISrsAsyncCallTask*>::iterator it;
-    for (it = tasks.begin(); it != tasks.end(); ++it) {
-        ISrsAsyncCallTask* task = *it;
+    std::vector<ISrsAsyncCallTask *>::iterator it;
+    for (it = tasks_.begin(); it != tasks_.end(); ++it) {
+        ISrsAsyncCallTask *task = *it;
         srs_freep(task);
     }
-    tasks.clear();
+    tasks_.clear();
 
-    st_cond_destroy(wait);
+    srs_cond_destroy(wait_);
+    srs_mutex_destroy(lock_);
 }
 
-int SrsAsyncCallWorker::execute(ISrsAsyncCallTask* t)
+srs_error_t SrsAsyncCallWorker::execute(ISrsAsyncCallTask *t)
 {
-    int ret = ERROR_SUCCESS;
+    srs_error_t err = srs_success;
 
-    tasks.push_back(t);
-    st_cond_signal(wait);
+    tasks_.push_back(t);
+    srs_cond_signal(wait_);
 
-    return ret;
+    return err;
 }
 
 int SrsAsyncCallWorker::count()
 {
-    return (int)tasks.size();
+    return (int)tasks_.size();
 }
 
-int SrsAsyncCallWorker::start()
+srs_error_t SrsAsyncCallWorker::start()
 {
-    return pthread->start();
+    srs_error_t err = srs_success;
+
+    srs_freep(trd_);
+    trd_ = new SrsSTCoroutine("async", this, _srs_context->get_id());
+
+    if ((err = trd_->start()) != srs_success) {
+        return srs_error_wrap(err, "coroutine");
+    }
+
+    return err;
 }
 
 void SrsAsyncCallWorker::stop()
 {
-    st_cond_signal(wait);
-    pthread->stop();
+    flush_tasks();
+    srs_cond_signal(wait_);
+    trd_->stop();
 }
 
-int SrsAsyncCallWorker::cycle()
+srs_error_t SrsAsyncCallWorker::cycle()
 {
-    int ret = ERROR_SUCCESS;
+    srs_error_t err = srs_success;
 
-    while (pthread->can_loop()) {
-        if (tasks.empty()) {
-            st_cond_wait(wait);
+    while (true) {
+        if ((err = trd_->pull()) != srs_success) {
+            return srs_error_wrap(err, "async call worker");
         }
 
-        std::vector<ISrsAsyncCallTask*> copies = tasks;
-        tasks.clear();
-
-        std::vector<ISrsAsyncCallTask*>::iterator it;
-        for (it = copies.begin(); it != copies.end(); ++it) {
-            ISrsAsyncCallTask* task = *it;
-            if ((ret = task->call()) != ERROR_SUCCESS) {
-                srs_warn("ignore async callback %s, ret=%d", task->to_string().c_str(), ret);
-            }
-            srs_freep(task);
+        if (tasks_.empty()) {
+            srs_cond_wait(wait_);
         }
+
+        flush_tasks();
     }
 
-    return ret;
+    return err;
 }
 
+void SrsAsyncCallWorker::flush_tasks()
+{
+    srs_error_t err = srs_success;
 
+    // Avoid the async call blocking other coroutines.
+    std::vector<ISrsAsyncCallTask *> copy;
+    if (true) {
+        SrsLocker(&lock_);
+
+        if (tasks_.empty()) {
+            return;
+        }
+
+        copy = tasks_;
+        tasks_.clear();
+    }
+
+    std::vector<ISrsAsyncCallTask *>::iterator it;
+    for (it = copy.begin(); it != copy.end(); ++it) {
+        ISrsAsyncCallTask *task = *it;
+
+        if ((err = task->call()) != srs_success) {
+            srs_warn("ignore task failed %s", srs_error_desc(err).c_str());
+            srs_freep(err);
+        }
+        srs_freep(task);
+    }
+}

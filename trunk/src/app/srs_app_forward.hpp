@@ -1,103 +1,115 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_APP_FORWARD_HPP
 #define SRS_APP_FORWARD_HPP
 
-/*
-#include <srs_app_forward.hpp>
-*/
 #include <srs_core.hpp>
 
 #include <string>
 
 #include <srs_app_st.hpp>
-#include <srs_app_thread.hpp>
 
-class ISrsProtocolReaderWriter;
-class SrsSharedPtrMessage;
+class ISrsProtocolReadWriter;
+class SrsMediaPacket;
 class SrsOnMetaDataPacket;
 class SrsMessageQueue;
 class SrsRtmpJitter;
 class SrsRtmpClient;
-class SrsRequest;
-class SrsSource;
+class ISrsRequest;
+class SrsLiveSource;
+class SrsOriginHub;
+class ISrsOriginHub;
 class SrsKbps;
 class SrsSimpleRtmpClient;
+class ISrsBasicRtmpClient;
+class ISrsAppFactory;
+class ISrsAppConfig;
 
-/**
-* forward the stream to other servers.
-*/
-// TODO: FIXME: refine the error log, comments it.
-class SrsForwarder : public ISrsReusableThread2Handler
+// The forward interface.
+class ISrsForwarder
 {
-private:
-    // the ep to forward, server[:port].
-    std::string ep_forward;
-    SrsRequest* req;
-private:
-    SrsReusableThread2* pthread;
-private:
-    SrsSource* source;
-    SrsSimpleRtmpClient* sdk;
-    SrsRtmpJitter* jitter;
-    SrsMessageQueue* queue;
-    /**
-    * cache the sequence header for retry when slave is failed.
-    * @see https://github.com/ossrs/srs/issues/150
-    */
-    SrsSharedPtrMessage* sh_audio;
-    SrsSharedPtrMessage* sh_video;
 public:
-    SrsForwarder(SrsSource* _source);
+    ISrsForwarder();
+    virtual ~ISrsForwarder();
+
+public:
+    virtual srs_error_t initialize(ISrsRequest *r, std::string ep) = 0;
+    virtual void set_queue_size(srs_utime_t queue_size) = 0;
+    virtual srs_error_t on_publish() = 0;
+    virtual void on_unpublish() = 0;
+    virtual srs_error_t on_meta_data(SrsMediaPacket *shared_metadata) = 0;
+    virtual srs_error_t on_audio(SrsMediaPacket *shared_audio) = 0;
+    virtual srs_error_t on_video(SrsMediaPacket *shared_video) = 0;
+};
+
+// Forward the stream to other servers.
+class SrsForwarder : public ISrsCoroutineHandler, public ISrsForwarder
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppFactory *app_factory_;
+    ISrsAppConfig *config_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    // The ep to forward, server[:port].
+    std::string ep_forward_;
+    ISrsRequest *req_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    // The source or stream context id to bind to.
+    SrsContextId source_cid_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsCoroutine *trd_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsOriginHub *hub_;
+    ISrsBasicRtmpClient *sdk_;
+    SrsRtmpJitter *jitter_;
+    SrsMessageQueue *queue_;
+    // Cache the sequence header for retry when slave is failed.
+    SrsMediaPacket *sh_audio_;
+    SrsMediaPacket *sh_video_;
+
+public:
+    SrsForwarder(ISrsOriginHub *h);
     virtual ~SrsForwarder();
+
 public:
-    virtual int initialize(SrsRequest* r, std::string ep);
-    virtual void set_queue_size(double queue_size);
+    virtual srs_error_t initialize(ISrsRequest *r, std::string ep);
+    virtual void set_queue_size(srs_utime_t queue_size);
+
 public:
-    virtual int on_publish();
+    virtual srs_error_t on_publish();
     virtual void on_unpublish();
-    /**
-    * forward the audio packet.
-    * @param shared_metadata, directly ptr, copy it if need to save it.
-    */
-    virtual int on_meta_data(SrsSharedPtrMessage* shared_metadata);
-    /**
-    * forward the audio packet.
-    * @param shared_audio, directly ptr, copy it if need to save it.
-    */
-    virtual int on_audio(SrsSharedPtrMessage* shared_audio);
-    /**
-    * forward the video packet.
-    * @param shared_video, directly ptr, copy it if need to save it.
-    */
-    virtual int on_video(SrsSharedPtrMessage* shared_video);
-// interface ISrsReusableThread2Handler.
+    // Forward the audio packet.
+    // @param shared_metadata, directly ptr, copy it if need to save it.
+    virtual srs_error_t on_meta_data(SrsMediaPacket *shared_metadata);
+    // Forward the audio packet.
+    // @param shared_audio, directly ptr, copy it if need to save it.
+    virtual srs_error_t on_audio(SrsMediaPacket *shared_audio);
+    // Forward the video packet.
+    // @param shared_video, directly ptr, copy it if need to save it.
+    virtual srs_error_t on_video(SrsMediaPacket *shared_video);
+    // Interface ISrsReusableThread2Handler.
 public:
-    virtual int cycle();
-private:
-    virtual int forward();
+    virtual srs_error_t cycle();
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t do_cycle();
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t forward();
 };
 
 #endif
-

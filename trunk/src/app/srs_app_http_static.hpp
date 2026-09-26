@@ -1,79 +1,160 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_APP_HTTP_STATIC_HPP
 #define SRS_APP_HTTP_STATIC_HPP
 
-/*
-#include <srs_app_http_static.hpp>
-*/
-
+#include <srs_app_http_conn.hpp>
+#include <srs_app_security.hpp>
 #include <srs_core.hpp>
 
-#include <srs_app_http_conn.hpp>
+class ISrsFileReaderFactory;
+class ISrsCommonHttpHandler;
+class ISrsHttpServeMux;
+class ISrsAppConfig;
+class ISrsStatistic;
+class ISrsHttpHooks;
+class ISrsSharedTimer;
 
-#ifdef SRS_AUTO_HTTP_SERVER
+// HLS virtual connection, build on query string ctx of hls stream.
+class SrsHlsVirtualConn : public ISrsExpire
+{
+public:
+    srs_utime_t request_time_;
+    ISrsRequest *req_;
+    std::string ctx_;
+    bool interrupt_;
 
-/**
- * the flv vod stream supports flv?start=offset-bytes.
- * for example, http://server/file.flv?start=10240
- * server will write flv header and sequence header,
- * then seek(10240) and response flv tag data.
- */
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsStatistic *stat_;
+
+public:
+    SrsHlsVirtualConn();
+    virtual ~SrsHlsVirtualConn();
+    // Interface ISrsExpire.
+public:
+    virtual void expire();
+};
+
+// Server HLS streaming.
+class SrsHlsStream : public ISrsFastTimerHandler
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    // The period of validity of the ctx
+    std::map<std::string, SrsHlsVirtualConn *>
+        map_ctx_info_;
+
+public:
+    SrsHlsStream();
+    virtual ~SrsHlsStream();
+
+public:
+    void assemble(); // Construct object, to avoid call function in constructor.
+
+public:
+    virtual srs_error_t serve_m3u8_ctx(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, ISrsFileReaderFactory *factory, std::string fullpath, ISrsRequest *req, bool *served);
+    virtual void on_serve_ts_ctx(ISrsHttpResponseWriter *w, ISrsHttpMessage *r);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    srs_error_t serve_new_session(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, ISrsRequest *req, std::string &ctx);
+    srs_error_t serve_exists_session(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, ISrsFileReaderFactory *factory, std::string fullpath);
+    bool ctx_is_exist(std::string ctx);
+    void alive(std::string ctx, ISrsRequest *req);
+    srs_error_t http_hooks_on_play(ISrsRequest *req);
+    void http_hooks_on_stop(ISrsRequest *req);
+    bool is_interrupt(std::string id);
+    // interface ISrsFastTimerHandler
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    srs_error_t on_timer(srs_utime_t interval);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsSecurity *security_;
+    ISrsAppConfig *config_;
+    ISrsStatistic *stat_;
+    ISrsHttpHooks *hooks_;
+    ISrsSharedTimer *shared_timer_;
+};
+
+// The Vod streaming, like FLV, MP4 or HLS streaming.
 class SrsVodStream : public SrsHttpFileServer
 {
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    SrsHlsStream hls_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppConfig *config_;
+
 public:
     SrsVodStream(std::string root_dir);
     virtual ~SrsVodStream();
-protected:
-    virtual int serve_flv_stream(ISrsHttpResponseWriter* w, ISrsHttpMessage* r, std::string fullpath, int offset);
-    virtual int serve_mp4_stream(ISrsHttpResponseWriter* w, ISrsHttpMessage* r, std::string fullpath, int start, int end);
+
+public:
+    void assemble(); // Construct object, to avoid call function in constructor.
+
+// clang-format off
+SRS_DECLARE_PROTECTED: // clang-format on
+    // The flv vod stream supports flv?start=offset-bytes.
+    // For example, http://server/file.flv?start=10240
+    // server will write flv header and sequence header,
+    // then seek(10240) and response flv tag data.
+    virtual srs_error_t serve_flv_stream(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, std::string fullpath, int64_t offset);
+    // Support mp4 with start and offset in query string.
+    virtual srs_error_t serve_mp4_stream(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, std::string fullpath, int64_t start, int64_t end);
+    // Support HLS streaming with pseudo session id.
+    virtual srs_error_t serve_m3u8_ctx(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, std::string fullpath);
+    // the ts file including: .ts .m4s init.mp4
+    virtual srs_error_t serve_ts_ctx(ISrsHttpResponseWriter *w, ISrsHttpMessage *r, std::string fullpath);
 };
 
-/**
-* the http static server instance,
-* serve http static file and flv/mp4 vod stream.
-*/
-class SrsHttpStaticServer : virtual public ISrsReloadHandler
+// The http static server instance,
+class ISrsHttpStaticServer : public ISrsHttpHandler
 {
-private:
-    SrsServer* server;
 public:
-    SrsHttpServeMux mux;
+    ISrsHttpStaticServer();
+    virtual ~ISrsHttpStaticServer();
+
 public:
-    SrsHttpStaticServer(SrsServer* svr);
+    virtual srs_error_t initialize() = 0;
+    virtual ISrsHttpServeMux *mux() = 0;
+};
+
+// The http static server instance,
+// serve http static file and flv/mp4 vod stream.
+class SrsHttpStaticServer : public ISrsHttpStaticServer
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsHttpServeMux *mux_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppConfig *config_;
+
+public:
+    SrsHttpStaticServer();
     virtual ~SrsHttpStaticServer();
+
 public:
-    virtual int initialize();
-private:
-    virtual int mount_vhost(std::string vhost, std::string& pmount);
-// interface ISrsReloadHandler.
+    virtual srs_error_t initialize();
+    virtual ISrsHttpServeMux *mux();
+
+    // Interface ISrsHttpHandler
 public:
-    virtual int on_reload_vhost_added(std::string vhost);
-    virtual int on_reload_vhost_http_updated();
+    virtual srs_error_t serve_http(ISrsHttpResponseWriter *w, ISrsHttpMessage *r);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t mount_vhost(std::string vhost, std::string &pmount);
 };
 
 #endif
-
-#endif
-

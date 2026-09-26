@@ -1,263 +1,334 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_APP_HTTP_STREAM_HPP
 #define SRS_APP_HTTP_STREAM_HPP
 
-/*
-#include <srs_app_http_stream.hpp>
-*/
-
+#include <srs_app_async_call.hpp>
+#include <srs_app_http_conn.hpp>
+#include <srs_app_security.hpp>
 #include <srs_core.hpp>
 
-#include <srs_app_http_conn.hpp>
+#include <vector>
 
-#ifdef SRS_AUTO_HTTP_SERVER
+class SrsAacTransmuxer;
+class SrsMp3Transmuxer;
+class ISrsFlvTransmuxer;
+class SrsTsTransmuxer;
+class SrsAsyncCallWorker;
+class ISrsAppConfig;
+class ISrsLiveSourceManager;
+class ISrsStatistic;
+class ISrsHttpHooks;
+class ISrsMessageQueue;
+class ISrsLiveConsumer;
+class ISrsTsTransmuxer;
+class ISrsAacTransmuxer;
+class ISrsBufferCache;
+class ISrsMp3Transmuxer;
+class ISrsCommonHttpHandler;
 
-/**
-* for the srs http stream cache, 
-* for example, the audio stream cache to make android(weixin) happy.
-* we start a thread to shrink the queue.
-*/
-class SrsBufferCache : public ISrsEndlessThreadHandler
+// The cache for HTTP Live Streaming encoder.
+class ISrsBufferCache
 {
-private:
-    double fast_cache;
-private:
-    SrsMessageQueue* queue;
-    SrsSource* source;
-    SrsRequest* req;
-    SrsEndlessThread* pthread;
 public:
-    SrsBufferCache(SrsSource* s, SrsRequest* r);
-    virtual ~SrsBufferCache();
+    ISrsBufferCache();
+    virtual ~ISrsBufferCache();
+
 public:
-    virtual int start();
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter);
-// interface ISrsEndlessThreadHandler.
+    virtual srs_error_t start() = 0;
+    virtual void stop() = 0;
+
 public:
-    virtual int cycle();
+    virtual bool alive() = 0;
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter) = 0;
+    virtual srs_error_t update_auth(ISrsRequest *r) = 0;
 };
 
-/**
-* the stream encoder in some codec, for example, flv or aac.
-*/
+// A cache for HTTP Live Streaming encoder, to make android(weixin) happy.
+class SrsBufferCache : public ISrsCoroutineHandler, public ISrsBufferCache
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppConfig *config_;
+    ISrsLiveSourceManager *live_sources_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    srs_utime_t fast_cache_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsMessageQueue *queue_;
+    ISrsRequest *req_;
+    ISrsCoroutine *trd_;
+
+public:
+    SrsBufferCache(ISrsRequest *r);
+    virtual ~SrsBufferCache();
+    virtual srs_error_t update_auth(ISrsRequest *r);
+
+public:
+    virtual srs_error_t start();
+    virtual void stop();
+    virtual bool alive();
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter);
+    // Interface ISrsEndlessThreadHandler.
+public:
+    virtual srs_error_t cycle();
+};
+
+// The encoder to transmux RTMP stream.
 class ISrsBufferEncoder
 {
 public:
     ISrsBufferEncoder();
     virtual ~ISrsBufferEncoder();
+
 public:
-    /**
-    * initialize the encoder with file writer(to http response) and stream cache.
-    * @param w the writer to write to http response.
-    * @param c the stream cache for audio stream fast startup.
-    */
-    virtual int initialize(SrsFileWriter* w, SrsBufferCache* c) = 0;
-    /**
-    * write rtmp video/audio/metadata.
-    */
-    virtual int write_audio(int64_t timestamp, char* data, int size) = 0;
-    virtual int write_video(int64_t timestamp, char* data, int size) = 0;
-    virtual int write_metadata(int64_t timestamp, char* data, int size) = 0;
+    // Initialize the encoder with file writer(to http response) and stream cache.
+    // @param w the writer to write to http response.
+    // @param c the stream cache for audio stream fast startup.
+    virtual srs_error_t initialize(SrsFileWriter *w, ISrsBufferCache *c) = 0;
+    // Write rtmp video/audio/metadata.
+    virtual srs_error_t write_audio(int64_t timestamp, char *data, int size) = 0;
+    virtual srs_error_t write_video(int64_t timestamp, char *data, int size) = 0;
+    virtual srs_error_t write_metadata(int64_t timestamp, char *data, int size) = 0;
+
 public:
-    /**
-    * for some stream, for example, mp3 and aac, the audio stream,
-    * we use large gop cache in encoder, for the gop cache of SrsSource is ignore audio.
-    * @return true to use gop cache of encoder; otherwise, use SrsSource.
-    */
+    // For some stream, for example, mp3 and aac, the audio stream,
+    // we use large gop cache in encoder, for the gop cache of SrsLiveSource is ignore audio.
+    // @return true to use gop cache of encoder; otherwise, use SrsLiveSource.
     virtual bool has_cache() = 0;
-    /**
-    * dumps the cache of encoder to consumer.
-    */
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter) = 0;
+    // Dumps the cache of encoder to consumer.
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter) = 0;
 };
 
-/**
-* the flv stream encoder, remux rtmp stream to flv stream.
-*/
+// Transmux RTMP to HTTP Live Streaming.
 class SrsFlvStreamEncoder : public ISrsBufferEncoder
 {
-protected:
-    SrsFlvEncoder* enc;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsFlvTransmuxer *enc_;
+    bool header_written_;
+    bool has_audio_;
+    bool has_video_;
+    bool guess_has_av_;
+
 public:
     SrsFlvStreamEncoder();
     virtual ~SrsFlvStreamEncoder();
+
 public:
-    virtual int initialize(SrsFileWriter* w, SrsBufferCache* c);
-    virtual int write_audio(int64_t timestamp, char* data, int size);
-    virtual int write_video(int64_t timestamp, char* data, int size);
-    virtual int write_metadata(int64_t timestamp, char* data, int size);
+    virtual srs_error_t initialize(SrsFileWriter *w, ISrsBufferCache *c);
+    virtual srs_error_t write_audio(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_video(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_metadata(int64_t timestamp, char *data, int size);
+
+public:
+    void set_drop_if_not_match(bool v);
+    void set_has_audio(bool v);
+    void set_has_video(bool v);
+    void set_guess_has_av(bool v);
+
 public:
     virtual bool has_cache();
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter);
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter);
+
+public:
+    // Write the tags in a time.
+    virtual srs_error_t write_tags(SrsMediaPacket **msgs, int count);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t write_header(bool has_video, bool has_audio);
 };
 
-#ifdef SRS_PERF_FAST_FLV_ENCODER
-/**
- * the fast flv stream encoder.
- * @see https://github.com/ossrs/srs/issues/405
- */
-class SrsFastFlvStreamEncoder : public SrsFlvStreamEncoder
-{
-public:
-    SrsFastFlvStreamEncoder();
-    virtual ~SrsFastFlvStreamEncoder();
-public:
-    /**
-     * write the tags in a time.
-     */
-    virtual int write_tags(SrsSharedPtrMessage** msgs, int count);
-};
-#endif
-
-/**
-* the ts stream encoder, remux rtmp stream to ts stream.
-*/
+// Transmux RTMP to HTTP TS Streaming.
 class SrsTsStreamEncoder : public ISrsBufferEncoder
 {
-private:
-    SrsTsEncoder* enc;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsTsTransmuxer *enc_;
+
 public:
     SrsTsStreamEncoder();
     virtual ~SrsTsStreamEncoder();
+
 public:
-    virtual int initialize(SrsFileWriter* w, SrsBufferCache* c);
-    virtual int write_audio(int64_t timestamp, char* data, int size);
-    virtual int write_video(int64_t timestamp, char* data, int size);
-    virtual int write_metadata(int64_t timestamp, char* data, int size);
+    virtual srs_error_t initialize(SrsFileWriter *w, ISrsBufferCache *c);
+    virtual srs_error_t write_audio(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_video(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_metadata(int64_t timestamp, char *data, int size);
+
 public:
     virtual bool has_cache();
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter);
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter);
+
+public:
+    void set_has_audio(bool v);
+    void set_has_video(bool v);
+    void set_guess_has_av(bool v);
 };
 
-/**
-* the aac stream encoder, remux rtmp stream to aac stream.
-*/
+// Transmux RTMP with AAC stream to HTTP AAC Streaming.
 class SrsAacStreamEncoder : public ISrsBufferEncoder
 {
-private:
-    SrsAacEncoder* enc;
-    SrsBufferCache* cache;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAacTransmuxer *enc_;
+    ISrsBufferCache *cache_;
+
 public:
     SrsAacStreamEncoder();
     virtual ~SrsAacStreamEncoder();
+
 public:
-    virtual int initialize(SrsFileWriter* w, SrsBufferCache* c);
-    virtual int write_audio(int64_t timestamp, char* data, int size);
-    virtual int write_video(int64_t timestamp, char* data, int size);
-    virtual int write_metadata(int64_t timestamp, char* data, int size);
+    virtual srs_error_t initialize(SrsFileWriter *w, ISrsBufferCache *c);
+    virtual srs_error_t write_audio(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_video(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_metadata(int64_t timestamp, char *data, int size);
+
 public:
     virtual bool has_cache();
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter);
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter);
 };
 
-/**
-* the mp3 stream encoder, remux rtmp stream to mp3 stream.
-*/
+// Transmux RTMP with MP3 stream to HTTP MP3 Streaming.
 class SrsMp3StreamEncoder : public ISrsBufferEncoder
 {
-private:
-    SrsMp3Encoder* enc;
-    SrsBufferCache* cache;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsMp3Transmuxer *enc_;
+    ISrsBufferCache *cache_;
+
 public:
     SrsMp3StreamEncoder();
     virtual ~SrsMp3StreamEncoder();
+
 public:
-    virtual int initialize(SrsFileWriter* w, SrsBufferCache* c);
-    virtual int write_audio(int64_t timestamp, char* data, int size);
-    virtual int write_video(int64_t timestamp, char* data, int size);
-    virtual int write_metadata(int64_t timestamp, char* data, int size);
+    virtual srs_error_t initialize(SrsFileWriter *w, ISrsBufferCache *c);
+    virtual srs_error_t write_audio(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_video(int64_t timestamp, char *data, int size);
+    virtual srs_error_t write_metadata(int64_t timestamp, char *data, int size);
+
 public:
     virtual bool has_cache();
-    virtual int dump_cache(SrsConsumer* consumer, SrsRtmpJitterAlgorithm jitter);
+    virtual srs_error_t dump_cache(ISrsLiveConsumer *consumer, SrsRtmpJitterAlgorithm jitter);
 };
 
-/**
-* write stream to http response direclty.
-*/
+// Write stream to http response direclty.
 class SrsBufferWriter : public SrsFileWriter
 {
-private:
-    ISrsHttpResponseWriter* writer;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsHttpResponseWriter *writer_;
+
 public:
-    SrsBufferWriter(ISrsHttpResponseWriter* w);
+    SrsBufferWriter(ISrsHttpResponseWriter *w);
     virtual ~SrsBufferWriter();
+
 public:
-    virtual int open(std::string file);
+    virtual srs_error_t open(std::string file);
     virtual void close();
+
 public:
     virtual bool is_open();
     virtual int64_t tellg();
+
 public:
-    virtual int write(void* buf, size_t count, ssize_t* pnwrite);
-    virtual int writev(iovec* iov, int iovcnt, ssize_t* pnwrite);
+    virtual srs_error_t write(void *buf, size_t count, ssize_t *pnwrite);
+    virtual srs_error_t writev(const iovec *iov, int iovcnt, ssize_t *pnwrite);
 };
 
-/**
-* the flv live stream supports access rtmp in flv over http.
-* srs will remux rtmp to flv streaming.
-*/
-class SrsLiveStream : public ISrsHttpHandler
+// Interface for HTTP Live Streaming.
+class ISrsLiveStream : public ISrsHttpHandler, public ISrsExpire
 {
-private:
-    SrsRequest* req;
-    SrsSource* source;
-    SrsBufferCache* cache;
 public:
-    SrsLiveStream(SrsSource* s, SrsRequest* r, SrsBufferCache* c);
+    ISrsLiveStream();
+    virtual ~ISrsLiveStream();
+
+public:
+    virtual srs_error_t update_auth(ISrsRequest *r) = 0;
+    virtual bool alive() = 0;
+};
+
+// HTTP Live Streaming, to transmux RTMP to HTTP FLV or other format.
+// TODO: FIXME: Rename to SrsHttpLive
+class SrsLiveStream : public ISrsLiveStream
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppConfig *config_;
+    ISrsLiveSourceManager *live_sources_;
+    ISrsStatistic *stat_;
+    ISrsHttpHooks *hooks_;
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsRequest *req_;
+    ISrsBufferCache *cache_;
+    ISrsSecurity *security_;
+    // For multiple viewers, which means there will more than one alive viewers for a live stream, so we must
+    // use an int value to represent if there is any viewer is alive. We should never do cleanup unless all
+    // viewers closed the connection.
+    std::vector<ISrsExpire *> viewers_;
+
+public:
+    SrsLiveStream(ISrsRequest *r, ISrsBufferCache *c);
     virtual ~SrsLiveStream();
+    virtual srs_error_t update_auth(ISrsRequest *r);
+
 public:
-    virtual int serve_http(ISrsHttpResponseWriter* w, ISrsHttpMessage* r);
-private:
-    virtual int streaming_send_messages(ISrsBufferEncoder* enc, SrsSharedPtrMessage** msgs, int nb_msgs);
+    virtual srs_error_t serve_http(ISrsHttpResponseWriter *w, ISrsHttpMessage *r);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    srs_error_t serve_http_impl(ISrsHttpResponseWriter *w, ISrsHttpMessage *r);
+
+public:
+    virtual bool alive();
+    // Interface ISrsExpire
+public:
+    virtual void expire();
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t do_serve_http(SrsLiveSource *source, ISrsLiveConsumer *consumer, ISrsHttpResponseWriter *w, ISrsHttpMessage *r);
+    virtual srs_error_t http_hooks_on_play(ISrsHttpMessage *r);
+    virtual void http_hooks_on_stop(ISrsHttpMessage *r);
+    virtual srs_error_t streaming_send_messages(ISrsBufferEncoder *enc, SrsMediaPacket **msgs, int nb_msgs);
 };
 
-/**
-* the srs live entry
-*/
-struct SrsLiveEntry
-{
-private:
-    bool _is_flv;
-    bool _is_ts;
-    bool _is_aac;
-    bool _is_mp3;
+// The Live Entry, to handle HTTP Live Streaming.
+struct SrsLiveEntry {
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    bool is_flv_;
+    bool is_ts_;
+    bool is_aac_;
+    bool is_mp3_;
+
 public:
-    SrsRequest* req;
-    SrsSource* source;
+    // We will free the request.
+    ISrsRequest *req_;
+
 public:
-    // for template, the mount contains variables.
-    // for concrete stream, the mount is url to access.
-    std::string mount;
-    // whether hstrs(http stream trigger rtmp source)
-    bool hstrs;
-    
-    SrsLiveStream* stream;
-    SrsBufferCache* cache;
-    
-    SrsLiveEntry(std::string m, bool h);
-    void reset_hstrs(bool h);
+    // For template, the mount contains variables.
+    // For concrete stream, the mount is url to access.
+    std::string mount_;
+
+    ISrsLiveStream *stream_;
+    ISrsBufferCache *cache_;
+
+    // Whether is disposing the entry.
+    bool disposing_;
+
+    SrsLiveEntry(std::string m);
+    virtual ~SrsLiveEntry();
 
     bool is_flv();
     bool is_ts();
@@ -265,109 +336,80 @@ public:
     bool is_aac();
 };
 
-/**
-* the m3u8 stream handler.
-*/
-class SrsHlsM3u8Stream : public ISrsHttpHandler
+// The HTTP Live Streaming Server, to serve FLV/TS/MP3/AAC stream.
+class ISrsHttpStreamServer : public ISrsHttpDynamicMatcher
 {
-private:
-    std::string m3u8;
 public:
-    SrsHlsM3u8Stream();
-    virtual ~SrsHlsM3u8Stream();
+    ISrsHttpStreamServer();
+    virtual ~ISrsHttpStreamServer();
+
 public:
-    virtual void set_m3u8(std::string v);
-public:
-    virtual int serve_http(ISrsHttpResponseWriter* w, ISrsHttpMessage* r);
+    virtual void assemble() = 0;
+    virtual srs_error_t initialize() = 0;
+    // HTTP flv/ts/mp3/aac stream
+    virtual srs_error_t http_mount(ISrsRequest *r) = 0;
+    virtual void http_unmount(ISrsRequest *r) = 0;
+    virtual ISrsHttpServeMux *mux() = 0;
 };
 
-/**
-* the ts stream handler.
-*/
-class SrsHlsTsStream : public ISrsHttpHandler
+// The HTTP Live Streaming Server, to serve FLV/TS/MP3/AAC stream.
+// TODO: Support multiple stream.
+class SrsHttpStreamServer : public ISrsHttpStreamServer
 {
-private:
-    std::string ts;
-public:
-    SrsHlsTsStream();
-    virtual ~SrsHlsTsStream();
-public:
-    virtual void set_ts(std::string v);
-public:
-    virtual int serve_http(ISrsHttpResponseWriter* w, ISrsHttpMessage* r);
-};
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAppConfig *config_;
+    ISrsHttpServeMux *mux_;
 
-/**
-* the srs hls entry.
-*/
-// TODO: FIXME: use hte hls template and entry.
-struct SrsHlsEntry
-{
-    // for template, the mount contains variables.
-    // for concrete stream, the mount is url to access.
-    std::string mount;
-    
-    // the template to create the entry
-    SrsHlsEntry* tmpl;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    ISrsAsyncCallWorker *async_;
 
-    // key: the m3u8/ts file path.
-    // value: the http handler.
-    std::map<std::string, ISrsHttpHandler*> streams;
-    
-    SrsHlsEntry();
-};
+public:
+    // The http live streaming template, to create streams.
+    std::map<std::string, SrsLiveEntry *> templateHandlers_;
+    // The http live streaming streams, created by template.
+    std::map<std::string, SrsLiveEntry *> streamHandlers_;
 
-/**
-* the http stream server instance,
-* serve http stream, for example, flv/ts/mp3/aac live stream.
-*/
-class SrsHttpStreamServer : virtual public ISrsReloadHandler
-    , virtual public ISrsHttpMatchHijacker
-{
-private:
-    SrsServer* server;
 public:
-    SrsHttpServeMux mux;
-    // the http live streaming template, to create streams.
-    std::map<std::string, SrsLiveEntry*> tflvs;
-    // the http live streaming streams, crote by template.
-    std::map<std::string, SrsLiveEntry*> sflvs;
-    // the hls live streaming template, to create streams.
-    std::map<std::string, SrsHlsEntry*> thls;
-    // the hls live streaming streams, crote by template.
-    std::map<std::string, SrsHlsEntry*> shls;
-public:
-    SrsHttpStreamServer(SrsServer* svr);
+    SrsHttpStreamServer();
+    void assemble();
     virtual ~SrsHttpStreamServer();
+
 public:
-    virtual int initialize();
-// http flv/ts/mp3/aac stream
+    virtual srs_error_t initialize();
+    virtual ISrsHttpServeMux *mux();
+
 public:
-    virtual int http_mount(SrsSource* s, SrsRequest* r);
-    virtual void http_unmount(SrsSource* s, SrsRequest* r);
-// hls stream
+    // HTTP flv/ts/mp3/aac stream
+    virtual srs_error_t http_mount(ISrsRequest *r);
+    virtual void http_unmount(ISrsRequest *r);
+
+    // Interface ISrsHttpDynamicMatcher
 public:
-    virtual int mount_hls(SrsRequest* r);
-    virtual int hls_update_m3u8(SrsRequest* r, std::string m3u8);
-    virtual int hls_update_ts(SrsRequest* r, std::string uri, std::string ts);
-    virtual int hls_remove_ts(SrsRequest* r, std::string uri);
-    virtual void unmount_hls(SrsRequest* r);
-// interface ISrsReloadHandler.
+    virtual srs_error_t dynamic_match(ISrsHttpMessage *request, ISrsHttpHandler **ph);
+
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    virtual srs_error_t initialize_flv_streaming();
+    virtual srs_error_t initialize_flv_entry(std::string vhost);
+};
+
+class SrsHttpStreamDestroy : public ISrsAsyncCallTask
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    std::string sid_;
+    std::map<std::string, SrsLiveEntry *> *streamHandlers_;
+    ISrsHttpServeMux *mux_;
+
 public:
-    virtual int on_reload_vhost_added(std::string vhost);
-    virtual int on_reload_vhost_http_remux_updated(std::string vhost);
-    virtual int on_reload_vhost_hls(std::string vhost);
-// interface ISrsHttpMatchHijacker
+    SrsHttpStreamDestroy(ISrsHttpServeMux *mux, std::map<std::string, SrsLiveEntry *> *handlers, std::string sid);
+    virtual ~SrsHttpStreamDestroy();
+
 public:
-    virtual int hijack(ISrsHttpMessage* request, ISrsHttpHandler** ph);
-private:
-    virtual int initialize_flv_streaming();
-    virtual int initialize_flv_entry(std::string vhost);
-    virtual int initialize_hls_streaming();
-    virtual std::string hls_mount_generate(SrsRequest* r, std::string uri, std::string tmpl);
+    virtual srs_error_t call();
+    virtual std::string to_string();
 };
 
 #endif
-
-#endif
-

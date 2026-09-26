@@ -1,58 +1,72 @@
-/*
- The MIT License (MIT)
- 
- Copyright (c) 2013-2016 SRS(ossrs)
- 
- Permission is hereby granted, free of charge, to any person obtaining a copy of
- this software and associated documentation files (the "Software"), to deal in
- the Software without restriction, including without limitation the rights to
- use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- the Software, and to permit persons to whom the Software is furnished to do so,
- subject to the following conditions:
- 
- The above copyright notice and this permission notice shall be included in all
- copies or substantial portions of the Software.
- 
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
-#ifndef SRS_KERNEL_AAC_HPP
-#define SRS_KERNEL_AAC_HPP
+#ifndef SRS_KERNEL_BALANCE_HPP
+#define SRS_KERNEL_BALANCE_HPP
 
-/*
-#include <srs_kernel_balance.hpp>
-*/
 #include <srs_core.hpp>
 
-#include <vector>
 #include <string>
+#include <vector>
 
-/**
- * the round-robin load balance algorithm,
- * used for edge pull, kafka and other multiple server feature.
- */
-class SrsLbRoundRobin
+// Interface for round-robin load balance algorithm.
+//
+// This interface defines the contract for load balancing algorithms that distribute
+// requests across multiple servers in a round-robin fashion. It's primarily used
+// for edge pull scenarios and other features that require distributing load across
+// multiple backend servers.
+//
+// The round-robin algorithm ensures fair distribution by cycling through available
+// servers in sequence, giving each server an equal opportunity to handle requests.
+//
+class ISrsLbRoundRobin
 {
-private:
-    // current selected index.
-    int index;
-    // total scheduled count.
-    u_int32_t count;
-    // current selected server.
-    std::string elem;
+public:
+    ISrsLbRoundRobin();
+    virtual ~ISrsLbRoundRobin();
+
+public:
+    // Select one server from the provided list of servers using the load balancing algorithm.
+    //
+    // @param servers A vector of server addresses/URLs to choose from. Must not be empty.
+    // @return The selected server address/URL as a string.
+    //
+    // @remark The implementation should handle the load balancing logic and maintain
+    //         any necessary state to ensure proper distribution across servers.
+    // @remark Callers must ensure the servers vector is not empty before calling this method.
+    //
+    virtual std::string select(const std::vector<std::string> &servers) = 0;
+};
+
+// Implementation of round-robin load balance algorithm.
+//
+// This class provides a concrete implementation of the ISrsLbRoundRobin interface
+// that distributes requests across multiple servers using a simple round-robin
+// algorithm. It maintains internal state to track the current position in the
+// server list and ensures fair distribution by cycling through servers sequentially.
+//
+class SrsLbRoundRobin : public ISrsLbRoundRobin
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    int index_;
+    uint32_t count_;
+    std::string elem_;
+
 public:
     SrsLbRoundRobin();
     virtual ~SrsLbRoundRobin();
+
 public:
-    virtual u_int32_t current();
+    // Get the current server index.
+    virtual uint32_t current();
+    // Get the currently selected server.
     virtual std::string selected();
-    virtual std::string select(const std::vector<std::string>& servers);
+    // Select the next server using round-robin algorithm.
+    virtual std::string select(const std::vector<std::string> &servers);
 };
 
 #endif
-

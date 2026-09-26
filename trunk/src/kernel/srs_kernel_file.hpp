@@ -1,121 +1,162 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2013-2016 SRS(ossrs)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
+//
+// Copyright (c) 2013-2026 The SRS Authors
+//
+// SPDX-License-Identifier: MIT
+//
 
 #ifndef SRS_KERNEL_FILE_HPP
 #define SRS_KERNEL_FILE_HPP
 
-/*
-#include <srs_kernel_file.hpp>
-*/
 #include <srs_core.hpp>
 
+#include <srs_kernel_io.hpp>
+
+#include <cstdio>
 #include <string>
 
 // for srs-librtmp, @see https://github.com/ossrs/srs/issues/213
-#ifndef _WIN32
 #include <sys/uio.h>
-#endif
 
-/**
-* file writer, to write to file.
-*/
-class SrsFileWriter
+class SrsFileReader;
+
+// The file writer factory.
+class ISrsFileWriter : public ISrsWriteSeeker
 {
-private:
-    std::string path;
-    int fd;
+public:
+    ISrsFileWriter();
+    virtual ~ISrsFileWriter();
+
+public:
+    virtual srs_error_t open(std::string p) = 0;
+    virtual void close() = 0;
+    virtual bool is_open() = 0;
+    virtual srs_error_t set_iobuf_size(int size) = 0;
+    virtual void seek2(int64_t offset) = 0;
+    virtual int64_t tellg() = 0;
+};
+
+// file writer, to write to file.
+class SrsFileWriter : public ISrsFileWriter
+{
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    std::string path_;
+    FILE *fp_;
+    char *buf_;
+
 public:
     SrsFileWriter();
     virtual ~SrsFileWriter();
+
 public:
-    /**
-     * open file writer, in truncate mode.
-     * @param p a string indicates the path of file to open.
-     */
-    virtual int open(std::string p);
-    /**
-     * open file writer, in append mode.
-     * @param p a string indicates the path of file to open.
-     */
-    virtual int open_append(std::string p);
-    /**
-     * close current writer.
-     * @remark user can reopen again.
-     */
+    // set io buf size
+    virtual srs_error_t set_iobuf_size(int size);
+
+    // open file writer, in truncate mode.
+    // @param p a string indicates the path of file to open.
+    virtual srs_error_t open(std::string p);
+    // open file writer, in append mode.
+    // @param p a string indicates the path of file to open.
+    virtual srs_error_t open_append(std::string p);
+    // close current writer.
+    // @remark user can reopen again.
     virtual void close();
+
 public:
     virtual bool is_open();
-    virtual void lseek(int64_t offset);
+    virtual void seek2(int64_t offset);
     virtual int64_t tellg();
+    // Interface ISrsWriteSeeker
 public:
-    /**
-    * write to file. 
-    * @param pnwrite the output nb_write, NULL to ignore.
-    */
-    virtual int write(void* buf, size_t count, ssize_t* pnwrite);
-    /**
-     * for the HTTP FLV, to writev to improve performance.
-     * @see https://github.com/ossrs/srs/issues/405
-     */
-    virtual int writev(iovec* iov, int iovcnt, ssize_t* pnwrite);
+    virtual srs_error_t write(void *buf, size_t count, ssize_t *pnwrite);
+    virtual srs_error_t writev(const iovec *iov, int iovcnt, ssize_t *pnwrite);
+    virtual srs_error_t lseek(off_t offset, int whence, off_t *seeked);
+};
+
+// The file reader factory.
+class ISrsFileReaderFactory
+{
+public:
+    ISrsFileReaderFactory();
+    virtual ~ISrsFileReaderFactory();
+
+public:
+    virtual SrsFileReader *create_file_reader();
+};
+
+// The file reader.
+class ISrsFileReader : public ISrsReadSeeker
+{
+public:
+    ISrsFileReader();
+    virtual ~ISrsFileReader();
+
+public:
+    virtual srs_error_t open(std::string p) = 0;
+    virtual void close() = 0;
+
+public:
+    virtual bool is_open() = 0;
+    virtual int64_t tellg() = 0;
+    virtual void skip(int64_t size) = 0;
+    virtual int64_t seek2(int64_t offset) = 0;
+    virtual int64_t filesize() = 0;
 };
 
 /**
-* file reader, to read from file.
-*/
-class SrsFileReader
+ * file reader, to read from file.
+ */
+class SrsFileReader : public ISrsFileReader
 {
-private:
-    std::string path;
-    int fd;
+// clang-format off
+SRS_DECLARE_PRIVATE: // clang-format on
+    std::string path_;
+    int fd_;
+
 public:
     SrsFileReader();
     virtual ~SrsFileReader();
+
 public:
     /**
      * open file reader.
      * @param p a string indicates the path of file to open.
      */
-    virtual int open(std::string p);
+    virtual srs_error_t open(std::string p);
     /**
      * close current reader.
      * @remark user can reopen again.
      */
     virtual void close();
+
 public:
     // TODO: FIXME: extract interface.
     virtual bool is_open();
     virtual int64_t tellg();
     virtual void skip(int64_t size);
-    virtual int64_t lseek(int64_t offset);
+    virtual int64_t seek2(int64_t offset);
     virtual int64_t filesize();
+    // Interface ISrsReadSeeker
 public:
-    /**
-    * read from file. 
-    * @param pnread the output nb_read, NULL to ignore.
-    */
-    virtual int read(void* buf, size_t count, ssize_t* pnread);
+    virtual srs_error_t read(void *buf, size_t count, ssize_t *pnread);
+    virtual srs_error_t lseek(off_t offset, int whence, off_t *seeked);
 };
 
-#endif
+// For utest to mock it.
+typedef int (*srs_open_t)(const char *path, int oflag, ...);
+typedef ssize_t (*srs_write_t)(int fildes, const void *buf, size_t nbyte);
+typedef ssize_t (*srs_read_t)(int fildes, void *buf, size_t nbyte);
+typedef off_t (*srs_lseek_t)(int fildes, off_t offset, int whence);
+typedef int (*srs_close_t)(int fildes);
 
+typedef FILE *(*srs_fopen_t)(const char *path, const char *mode);
+typedef size_t (*srs_fwrite_t)(const void *ptr, size_t size, size_t nitems,
+                               FILE *stream);
+typedef size_t (*srs_fread_t)(void *ptr, size_t size, size_t nitems,
+                              FILE *stream);
+typedef int (*srs_fseek_t)(FILE *stream, long offset, int whence);
+typedef int (*srs_fclose_t)(FILE *stream);
+typedef long (*srs_ftell_t)(FILE *stream);
+typedef int (*srs_setvbuf_t)(FILE *stream, char *buf, int type, size_t size);
+
+#endif
